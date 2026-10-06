@@ -37,3 +37,11 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.temp
+
+/src/generated/prisma
+
+# AI/editor tooling
+.agents/
+.claude/
+.windsurf/
+skills-lock.json
