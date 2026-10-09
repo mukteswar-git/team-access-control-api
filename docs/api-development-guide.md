@@ -284,10 +284,7 @@ The authorization service should determine whether the actor has the required pe
 Conceptually:
 
 ```ts
-authorizationService.requirePermission(
-  actor,
-  "membership.update",
-);
+authorizationService.requirePermission(actor, "membership.update");
 ```
 
 Permission checking alone is not sufficient. Scope must also be enforced.
@@ -829,19 +826,19 @@ Implement POST /organizations/:organizationId/invitations
 
 ### Test cases
 
-| Test | Expected result |
-|---|---|
-| Super User invites Member | Success |
-| Super User invites Manager | Success |
-| Admin invites in-scope Manager | Success |
-| Admin invites out-of-scope Manager | Denied |
-| Manager invites assigned Member | Success |
-| Manager invites another Manager | Denied |
-| Member creates invitation | Denied |
-| Invitation for existing member | Conflict / appropriate service response |
-| Cross-org reporting assignment | Denied |
-| Token stored in DB | Only token hash exists |
-| Invitation expiration | Expired invitation rejected |
+| Test                               | Expected result                         |
+| ---------------------------------- | --------------------------------------- |
+| Super User invites Member          | Success                                 |
+| Super User invites Manager         | Success                                 |
+| Admin invites in-scope Manager     | Success                                 |
+| Admin invites out-of-scope Manager | Denied                                  |
+| Manager invites assigned Member    | Success                                 |
+| Manager invites another Manager    | Denied                                  |
+| Member creates invitation          | Denied                                  |
+| Invitation for existing member     | Conflict / appropriate service response |
+| Cross-org reporting assignment     | Denied                                  |
+| Token stored in DB                 | Only token hash exists                  |
+| Invitation expiration              | Expired invitation rejected             |
 
 The developer should add these as automated tests.
 

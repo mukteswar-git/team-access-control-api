@@ -73,8 +73,7 @@ const permissions = [
     id: "10000000-0000-0000-0000-000000000007",
     code: "organization.manage",
     name: "Manage Organization",
-    description:
-      "Update organization settings and transfer ownership",
+    description: "Update organization settings and transfer ownership",
   },
   {
     id: "10000000-0000-0000-0000-000000000008",
@@ -133,11 +132,7 @@ const rolePermissionMap: Record<string, string[]> = {
     "session.manage_any",
   ],
 
-  member: [
-    "organization.read",
-    "membership.read",
-    "session.manage_self",
-  ],
+  member: ["organization.read", "membership.read", "session.manage_self"],
 };
 
 async function main() {
@@ -168,20 +163,13 @@ async function main() {
   const seededRoles = await prisma.role.findMany();
   const seededPermissions = await prisma.permission.findMany();
 
-  const roleMap = new Map(
-    seededRoles.map((role) => [role.code, role.id]),
-  );
+  const roleMap = new Map(seededRoles.map((role) => [role.code, role.id]));
 
   const permissionMap = new Map(
-    seededPermissions.map((permission) => [
-      permission.code,
-      permission.id,
-    ]),
+    seededPermissions.map((permission) => [permission.code, permission.id]),
   );
 
-  for (const [roleCode, permissionCodes] of Object.entries(
-    rolePermissionMap,
-  )) {
+  for (const [roleCode, permissionCodes] of Object.entries(rolePermissionMap)) {
     const roleId = roleMap.get(roleCode);
 
     if (!roleId) {
@@ -192,9 +180,7 @@ async function main() {
       const permissionId = permissionMap.get(permissionCode);
 
       if (!permissionId) {
-        throw new Error(
-          `Permission not found: ${permissionCode}`,
-        );
+        throw new Error(`Permission not found: ${permissionCode}`);
       }
 
       await prisma.rolePermission.upsert({

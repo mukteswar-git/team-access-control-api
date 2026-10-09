@@ -1048,33 +1048,33 @@ GET /organizations/:organizationId/audit-logs/:auditLogId
 
 ## 12. Authorization Summary
 
-| Endpoint | Required authorization |
-|---|---|
-| `POST /auth/register` | None |
-| `GET /auth/verify-email` | Valid verification token |
-| `POST /auth/login` | Credentials |
-| `POST /auth/logout` | Authenticated session |
-| `GET /auth/me` | Authenticated session |
-| `POST /auth/password/change` | Authenticated session |
-| `POST /auth/password/forgot` | None |
-| `POST /auth/password/reset` | Valid reset token |
-| `POST /organizations` | Authenticated + verified email |
-| `GET /organizations/:id` | `organization.read` + active membership |
-| `PATCH /organizations/:id` | `organization.manage` + Super User |
-| `POST /organizations/:id/transfer-ownership` | `organization.manage` + current Super User |
-| `GET /organizations/:id/memberships` | `membership.read` + active membership |
-| `GET /organizations/:id/memberships/:membershipId` | `membership.read` + same organization |
-| `PATCH /organizations/:id/memberships/:membershipId` | `membership.update` + target in scope |
-| `DELETE /organizations/:id/memberships/:membershipId` | `membership.remove` + target in scope |
-| `POST /organizations/:id/invitations` | `invitation.create` + target in scope |
-| `POST /organizations/:id/invitations/:invitationId/revoke` | `invitation.revoke` + invitation in scope |
-| `POST /invitations/:token/accept` | Valid invitation + matching verified email |
-| `GET /sessions` | `session.manage_self` |
-| `DELETE /sessions/:sessionId` | `session.manage_self` + own session |
-| `POST /sessions/logout-all` | `session.manage_self` |
-| `DELETE /organizations/:id/memberships/:membershipId/sessions/:sessionId` | `session.manage_any` + target in scope |
-| `GET /organizations/:id/audit-logs` | `audit_log.read` + Super User/Admin |
-| `GET /organizations/:id/audit-logs/:auditLogId` | `audit_log.read` + Super User/Admin |
+| Endpoint                                                                  | Required authorization                     |
+| ------------------------------------------------------------------------- | ------------------------------------------ |
+| `POST /auth/register`                                                     | None                                       |
+| `GET /auth/verify-email`                                                  | Valid verification token                   |
+| `POST /auth/login`                                                        | Credentials                                |
+| `POST /auth/logout`                                                       | Authenticated session                      |
+| `GET /auth/me`                                                            | Authenticated session                      |
+| `POST /auth/password/change`                                              | Authenticated session                      |
+| `POST /auth/password/forgot`                                              | None                                       |
+| `POST /auth/password/reset`                                               | Valid reset token                          |
+| `POST /organizations`                                                     | Authenticated + verified email             |
+| `GET /organizations/:id`                                                  | `organization.read` + active membership    |
+| `PATCH /organizations/:id`                                                | `organization.manage` + Super User         |
+| `POST /organizations/:id/transfer-ownership`                              | `organization.manage` + current Super User |
+| `GET /organizations/:id/memberships`                                      | `membership.read` + active membership      |
+| `GET /organizations/:id/memberships/:membershipId`                        | `membership.read` + same organization      |
+| `PATCH /organizations/:id/memberships/:membershipId`                      | `membership.update` + target in scope      |
+| `DELETE /organizations/:id/memberships/:membershipId`                     | `membership.remove` + target in scope      |
+| `POST /organizations/:id/invitations`                                     | `invitation.create` + target in scope      |
+| `POST /organizations/:id/invitations/:invitationId/revoke`                | `invitation.revoke` + invitation in scope  |
+| `POST /invitations/:token/accept`                                         | Valid invitation + matching verified email |
+| `GET /sessions`                                                           | `session.manage_self`                      |
+| `DELETE /sessions/:sessionId`                                             | `session.manage_self` + own session        |
+| `POST /sessions/logout-all`                                               | `session.manage_self`                      |
+| `DELETE /organizations/:id/memberships/:membershipId/sessions/:sessionId` | `session.manage_any` + target in scope     |
+| `GET /organizations/:id/audit-logs`                                       | `audit_log.read` + Super User/Admin        |
+| `GET /organizations/:id/audit-logs/:auditLogId`                           | `audit_log.read` + Super User/Admin        |
 
 ---
 
