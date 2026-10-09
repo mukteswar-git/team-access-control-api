@@ -1700,4 +1700,258 @@ describe("Database integrity", () => {
       });
     }
   });
+
+  test("rejects a manager assigned to another manager", async () => {
+    const targetUser = await prisma.user.create({
+      data: {
+        email: `target-manager-${randomUUID()}@example.com`,
+        passwordHash: "hash",
+      },
+    });
+
+    const assignedUser = await prisma.user.create({
+      data: {
+        email: `assigned-manager-${randomUUID()}@example.com`,
+        passwordHash: "hash",
+      },
+    });
+
+    const organization = await prisma.organization.create({
+      data: { name: `Manager Role Assignment ${randomUUID()}` },
+    });
+
+    const managerRole = await prisma.role.findUniqueOrThrow({
+      where: { code: "manager" },
+    });
+
+    try {
+      const targetMembership = await prisma.membership.create({
+        data: {
+          userId: targetUser.id,
+          organizationId: organization.id,
+          roleId: managerRole.id,
+        },
+      });
+
+      await expect(
+        prisma.membership.create({
+          data: {
+            userId: assignedUser.id,
+            organizationId: organization.id,
+            roleId: managerRole.id,
+            adminMembershipId: targetMembership.id,
+          },
+        }),
+      ).rejects.toThrow();
+    } finally {
+      await prisma.membership.deleteMany({
+        where: { organizationId: organization.id },
+      });
+
+      await prisma.organization.delete({
+        where: { id: organization.id },
+      });
+
+      await prisma.user.deleteMany({
+        where: { id: { in: [targetUser.id, assignedUser.id] } },
+      });
+    }
+  });
+
+  test("rejects a member assigned to an admin as their manager", async () => {
+    const adminUser = await prisma.user.create({
+      data: {
+        email: `target-admin-${randomUUID()}@example.com`,
+        passwordHash: "hash",
+      },
+    });
+
+    const memberUser = await prisma.user.create({
+      data: {
+        email: `assigned-member-${randomUUID()}@example.com`,
+        passwordHash: "hash",
+      },
+    });
+
+    const organization = await prisma.organization.create({
+      data: { name: `Member Role Assignment ${randomUUID()}` },
+    });
+
+    const adminRole = await prisma.role.findUniqueOrThrow({
+      where: { code: "admin" },
+    });
+
+    const memberRole = await prisma.role.findUniqueOrThrow({
+      where: { code: "member" },
+    });
+
+    try {
+      const adminMembership = await prisma.membership.create({
+        data: {
+          userId: adminUser.id,
+          organizationId: organization.id,
+          roleId: adminRole.id,
+        },
+      });
+
+      await expect(
+        prisma.membership.create({
+          data: {
+            userId: memberUser.id,
+            organizationId: organization.id,
+            roleId: memberRole.id,
+            managerMembershipId: adminMembership.id,
+          },
+        }),
+      ).rejects.toThrow();
+    } finally {
+      await prisma.membership.deleteMany({
+        where: { organizationId: organization.id },
+      });
+
+      await prisma.organization.delete({
+        where: { id: organization.id },
+      });
+
+      await prisma.user.deleteMany({
+        where: { id: { in: [adminUser.id, memberUser.id] } },
+      });
+    }
+  });
+
+  test("rejects changing an assigned admin membership to manager", async () => {
+    const adminUser = await prisma.user.create({
+      data: {
+        email: `assigned-admin-${randomUUID()}@example.com`,
+        passwordHash: "hash",
+      },
+    });
+
+    const managerUser = await prisma.user.create({
+      data: {
+        email: `manager-${randomUUID()}@example.com`,
+        passwordHash: "hash",
+      },
+    });
+
+    const organization = await prisma.organization.create({
+      data: { name: `Admin Role Change ${randomUUID()}` },
+    });
+
+    const adminRole = await prisma.role.findUniqueOrThrow({
+      where: { code: "admin" },
+    });
+
+    const managerRole = await prisma.role.findUniqueOrThrow({
+      where: { code: "manager" },
+    });
+
+    try {
+      const adminMembership = await prisma.membership.create({
+        data: {
+          userId: adminUser.id,
+          organizationId: organization.id,
+          roleId: adminRole.id,
+        },
+      });
+
+      await prisma.membership.create({
+        data: {
+          userId: managerUser.id,
+          organizationId: organization.id,
+          roleId: managerRole.id,
+          adminMembershipId: adminMembership.id,
+        },
+      });
+
+      await expect(
+        prisma.membership.update({
+          where: { id: adminMembership.id },
+          data: { roleId: managerRole.id },
+        }),
+      ).rejects.toThrow();
+    } finally {
+      await prisma.membership.deleteMany({
+        where: { organizationId: organization.id },
+      });
+
+      await prisma.organization.delete({
+        where: { id: organization.id },
+      });
+
+      await prisma.user.deleteMany({
+        where: { id: { in: [adminUser.id, managerUser.id] } },
+      });
+    }
+  });
+
+  test("rejects changing an assigned manager membership to admin", async () => {
+    const managerUser = await prisma.user.create({
+      data: {
+        email: `assigned-manager-${randomUUID()}@example.com`,
+        passwordHash: "hash",
+      },
+    });
+
+    const memberUser = await prisma.user.create({
+      data: {
+        email: `member-${randomUUID()}@example.com`,
+        passwordHash: "hash",
+      },
+    });
+
+    const organization = await prisma.organization.create({
+      data: { name: `Manager Role Change ${randomUUID()}` },
+    });
+
+    const managerRole = await prisma.role.findUniqueOrThrow({
+      where: { code: "manager" },
+    });
+
+    const adminRole = await prisma.role.findUniqueOrThrow({
+      where: { code: "admin" },
+    });
+
+    const memberRole = await prisma.role.findUniqueOrThrow({
+      where: { code: "member" },
+    });
+
+    try {
+      const managerMembership = await prisma.membership.create({
+        data: {
+          userId: managerUser.id,
+          organizationId: organization.id,
+          roleId: managerRole.id,
+        },
+      });
+
+      await prisma.membership.create({
+        data: {
+          userId: memberUser.id,
+          organizationId: organization.id,
+          roleId: memberRole.id,
+          managerMembershipId: managerMembership.id,
+        },
+      });
+
+      await expect(
+        prisma.membership.update({
+          where: { id: managerMembership.id },
+          data: { roleId: adminRole.id },
+        }),
+      ).rejects.toThrow();
+    } finally {
+      await prisma.membership.deleteMany({
+        where: { organizationId: organization.id },
+      });
+
+      await prisma.organization.delete({
+        where: { id: organization.id },
+      });
+
+      await prisma.user.deleteMany({
+        where: { id: { in: [managerUser.id, memberUser.id] } },
+      });
+    }
+  });
 });
