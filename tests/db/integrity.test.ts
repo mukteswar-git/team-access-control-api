@@ -17,6 +17,105 @@ describe("Database integrity", () => {
     await prisma.$disconnect();
   });
 
+  test("rejects duplicate role codes", async () => {
+    const role = await prisma.role.findUniqueOrThrow({
+      where: { code: "member" },
+    });
+
+    await expect(
+      prisma.role.create({
+        data: {
+          code: role.code,
+          name: "Duplicate Member Role",
+          description: "Test duplicate role code",
+        },
+      }),
+    ).rejects.toThrow();
+  });
+
+  test("rejects duplicate permission codes", async () => {
+    const permission = await prisma.permission.findUniqueOrThrow({
+      where: { code: "organization.read" },
+    });
+
+    await expect(
+      prisma.permission.create({
+        data: {
+          code: permission.code,
+          name: "Duplicate Permission",
+          description: "Test duplicate permission code",
+        },
+      }),
+    ).rejects.toThrow();
+  });
+
+  test("rejects duplicate role-permission pairs", async () => {
+    const role = await prisma.role.findUniqueOrThrow({
+      where: { code: "member" },
+    });
+
+    const permission = await prisma.permission.findUniqueOrThrow({
+      where: { code: "organization.read" },
+    });
+
+    const existingPair = await prisma.rolePermission.findUnique({
+      where: {
+        roleId_permissionId: {
+          roleId: role.id,
+          permissionId: permission.id,
+        },
+      },
+    });
+
+    if (!existingPair) {
+      await prisma.rolePermission.create({
+        data: {
+          roleId: role.id,
+          permissionId: permission.id,
+        },
+      });
+    }
+
+    await expect(
+      prisma.rolePermission.create({
+        data: {
+          roleId: role.id,
+          permissionId: permission.id,
+        },
+      }),
+    ).rejects.toThrow();
+  });
+
+  test("rejects role-permission mappings with a nonexistent role", async () => {
+    const permission = await prisma.permission.findUniqueOrThrow({
+      where: { code: "organization.read" },
+    });
+
+    await expect(
+      prisma.rolePermission.create({
+        data: {
+          roleId: randomUUID(),
+          permissionId: permission.id,
+        },
+      }),
+    ).rejects.toThrow();
+  });
+
+  test("rejects role-permission mappings with a nonexistent permission", async () => {
+    const role = await prisma.role.findUniqueOrThrow({
+      where: { code: "member" },
+    });
+
+    await expect(
+      prisma.rolePermission.create({
+        data: {
+          roleId: role.id,
+          permissionId: randomUUID(),
+        },
+      }),
+    ).rejects.toThrow();
+  });
+
   test("rejects duplicate user email", async () => {
     const email = `db-integrity-${randomUUID()}@example.com`;
 
