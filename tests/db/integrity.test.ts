@@ -1320,4 +1320,68 @@ describe("Database integrity", () => {
       }),
     ).rejects.toThrow();
   });
+
+  test("rejects memberships for nonexistent organizations", async () => {
+    const user = await prisma.user.create({
+      data: {
+        email: `missing-org-${randomUUID()}@example.com`,
+        passwordHash: "hash",
+      },
+    });
+
+    const memberRole = await prisma.role.findUniqueOrThrow({
+      where: { code: "member" },
+    });
+
+    try {
+      await expect(
+        prisma.membership.create({
+          data: {
+            userId: user.id,
+            organizationId: randomUUID(),
+            roleId: memberRole.id,
+          },
+        }),
+      ).rejects.toThrow();
+    } finally {
+      await prisma.user.delete({
+        where: { id: user.id },
+      });
+    }
+  });
+
+  test("rejects memberships with nonexistent roles", async () => {
+    const user = await prisma.user.create({
+      data: {
+        email: `missing-role-${randomUUID()}@example.com`,
+        passwordHash: "hash",
+      },
+    });
+
+    const organization = await prisma.organization.create({
+      data: {
+        name: `Missing Role Test ${randomUUID()}`,
+      },
+    });
+
+    try {
+      await expect(
+        prisma.membership.create({
+          data: {
+            userId: user.id,
+            organizationId: organization.id,
+            roleId: randomUUID(),
+          },
+        }),
+      ).rejects.toThrow();
+    } finally {
+      await prisma.organization.delete({
+        where: { id: organization.id },
+      });
+
+      await prisma.user.delete({
+        where: { id: user.id },
+      });
+    }
+  });
 });
