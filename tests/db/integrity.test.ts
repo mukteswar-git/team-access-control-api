@@ -1296,4 +1296,28 @@ describe("Database integrity", () => {
       });
     }
   });
+
+  test("rejects email verification tokens for nonexistent users", async () => {
+    await expect(
+      prisma.emailVerificationToken.create({
+        data: {
+          userId: randomUUID(),
+          tokenHash: randomUUID(),
+          expiresAt: new Date(Date.now() + 60_000),
+        },
+      }),
+    ).rejects.toThrow();
+  });
+
+  test("rejects password reset tokens for nonexistent users", async () => {
+    await expect(
+      prisma.passwordResetToken.create({
+        data: {
+          userId: randomUUID(),
+          tokenHash: randomUUID(),
+          expiresAt: new Date(Date.now() + 60_000),
+        },
+      }),
+    ).rejects.toThrow();
+  });
 });
