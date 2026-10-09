@@ -266,10 +266,10 @@ ALTER TABLE "invitations" ADD CONSTRAINT "invitations_role_id_fkey" FOREIGN KEY 
 ALTER TABLE "invitations" ADD CONSTRAINT "invitations_created_by_membership_id_fkey" FOREIGN KEY ("created_by_membership_id") REFERENCES "memberships"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "invitations" ADD CONSTRAINT "invitations_admin_membership_id_fkey" FOREIGN KEY ("admin_membership_id") REFERENCES "memberships"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "invitations" ADD CONSTRAINT "invitations_admin_membership_id_organization_id_fkey" FOREIGN KEY ("admin_membership_id", "organization_id") REFERENCES "memberships"("id", "organization_id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "invitations" ADD CONSTRAINT "invitations_manager_membership_id_fkey" FOREIGN KEY ("manager_membership_id") REFERENCES "memberships"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "invitations" ADD CONSTRAINT "invitations_manager_membership_id_organization_id_fkey" FOREIGN KEY ("manager_membership_id", "organization_id") REFERENCES "memberships"("id", "organization_id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "audit_logs" ADD CONSTRAINT "audit_logs_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "organizations"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
@@ -281,4 +281,4 @@ ALTER TABLE "audit_logs" ADD CONSTRAINT "audit_logs_actor_user_id_fkey" FOREIGN 
 ALTER TABLE "audit_logs" ADD CONSTRAINT "audit_logs_actor_membership_id_fkey" FOREIGN KEY ("actor_membership_id") REFERENCES "memberships"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- Exactly one Super User per organization
-CREATE UNIQUE INDEX "memberships_one_super_user_per_org" ON "memberships" ("organization_id") WHERE "role_id" = '00000000-0000-4000-8000-000000000001';
+CREATE UNIQUE INDEX "memberships_one_super_user_per_org" ON "memberships" ("organization_id") WHERE "role_id" = '00000000-0000-0000-0000-000000000001';
