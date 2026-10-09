@@ -1226,4 +1226,74 @@ describe("Database integrity", () => {
       }
     }
   });
+
+  test("rejects duplicate email verification token hashes", async () => {
+    const user = await prisma.user.create({
+      data: {
+        email: `verification-${randomUUID()}@example.com`,
+        passwordHash: "hash",
+      },
+    });
+
+    const tokenHash = randomUUID();
+
+    try {
+      await prisma.emailVerificationToken.create({
+        data: {
+          userId: user.id,
+          tokenHash,
+          expiresAt: new Date(Date.now() + 60_000),
+        },
+      });
+
+      await expect(
+        prisma.emailVerificationToken.create({
+          data: {
+            userId: user.id,
+            tokenHash,
+            expiresAt: new Date(Date.now() + 60_000),
+          },
+        }),
+      ).rejects.toThrow();
+    } finally {
+      await prisma.user.delete({
+        where: { id: user.id },
+      });
+    }
+  });
+
+  test("rejects duplicate password reset token hashes", async () => {
+    const user = await prisma.user.create({
+      data: {
+        email: `password-reset-${randomUUID()}@example.com`,
+        passwordHash: "hash",
+      },
+    });
+
+    const tokenHash = randomUUID();
+
+    try {
+      await prisma.passwordResetToken.create({
+        data: {
+          userId: user.id,
+          tokenHash,
+          expiresAt: new Date(Date.now() + 60_000),
+        },
+      });
+
+      await expect(
+        prisma.passwordResetToken.create({
+          data: {
+            userId: user.id,
+            tokenHash,
+            expiresAt: new Date(Date.now() + 60_000),
+          },
+        }),
+      ).rejects.toThrow();
+    } finally {
+      await prisma.user.delete({
+        where: { id: user.id },
+      });
+    }
+  });
 });
