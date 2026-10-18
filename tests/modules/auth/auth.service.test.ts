@@ -1,0 +1,611 @@
+import { randomUUID, createHash } from "node:crypto";
+import argon2 from "argon2";
+import {
+  afterAll,
+  beforeEach,
+  describe,
+  expect,
+  jest,
+  test,
+} from "@jest/globals";
+import {
+  testPrisma as prisma,
+  disconnectTestDatabase,
+} from "../../helpers/database.js";
+
+const mockSendEmail = jest
+  .fn<
+    (options: { to: string; subject: string; html: string }) => Promise<void>
+  >()
+  .mockResolvedValue(undefined);
+
+jest.unstable_mockModule("../../../src/lib/email.js", () => ({
+  sendEmail: mockSendEmail,
+}));
+
+const {
+  registerUser,
+  verifyEmail,
+  loginUser,
+  logoutUser,
+  validateSession,
+  requestPasswordReset,
+  resetPassword,
+} = await import("../../../src/modules/auth/auth.service.js");
+
+async function createVerificationFixture(
+  expiresAt = new Date(Date.now() + 60_000),
+) {
+  const user = await prisma.user.create({
+    data: {
+      email: `verify-${randomUUID()}@example.com`,
+      passwordHash: "test-hash",
+    },
+  });
+
+  const rawToken = randomUUID() + randomUUID();
+  const tokenHash = createHash("sha256").update(rawToken).digest("hex");
+
+  await prisma.emailVerificationToken.create({
+    data: {
+      userId: user.id,
+      tokenHash,
+      expiresAt,
+    },
+  });
+
+  return { user, rawToken };
+}
+
+async function createLoginFixture(options?: { emailVerified?: boolean }) {
+  const password = "Strong-test-password-123";
+  const user = await prisma.user.create({
+    data: {
+      email: `login-${randomUUID()}@example.com`,
+      passwordHash: await argon2.hash(password, {
+        type: argon2.argon2id,
+      }),
+      emailVerifiedAt: options?.emailVerified === false ? null : new Date(),
+    },
+  });
+
+  return { user, password };
+}
+
+async function createPasswordResetFixture(
+  expiresAt = new Date(Date.now() + 60_000),
+) {
+  const password = "Old-test-password-123";
+
+  const user = await prisma.user.create({
+    data: {
+      email: `reset-${randomUUID()}@example.com`,
+      passwordHash: await argon2.hash(password, {
+        type: argon2.argon2id,
+      }),
+      emailVerifiedAt: new Date(),
+    },
+  });
+
+  const rawToken = randomUUID() + randomUUID();
+  const tokenHash = createHash("sha256").update(rawToken).digest("hex");
+
+  await prisma.passwordResetToken.create({
+    data: {
+      userId: user.id,
+      tokenHash,
+      expiresAt,
+    },
+  });
+
+  return { user, password, rawToken, tokenHash };
+}
+
+describe("Auth service — registerUser", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  afterAll(async () => {
+    await disconnectTestDatabase();
+  });
+
+  test("creates a user with a normalized email and hashed password", async () => {
+    const email = `  ${randomUUID().toUpperCase()}@EXAMPLE.COM  `;
+    const password = "Strong-test-password-123";
+
+    const result = await registerUser({ email, password });
+
+    try {
+      const user = await prisma.user.findUnique({
+        where: { id: result.user.id },
+      });
+
+      expect(result.user.email).toBe(email.trim().toLowerCase());
+      expect(mockSendEmail).toHaveBeenCalledWith(
+        expect.objectContaining({
+          to: email.trim().toLowerCase(),
+          subject: "Verify your email — Team Access Control",
+          html: expect.stringContaining("/verify-email?token="),
+        }),
+      );
+      expect(result.user.emailVerifiedAt).toBeNull();
+      expect(user).not.toBeNull();
+      expect(user?.passwordHash).not.toBe(password);
+      expect(await argon2.verify(user!.passwordHash, password)).toBe(true);
+    } finally {
+      await prisma.user.delete({ where: { id: result.user.id } });
+    }
+  });
+
+  test("stores only the hash of the verification token", async () => {
+    const email = `verification-${randomUUID()}@example.com`;
+
+    const result = await registerUser({
+      email,
+      password: "Strong-test-password-123",
+    });
+
+    try {
+      const emailCall = mockSendEmail.mock.calls.at(-1)?.[0];
+
+      expect(emailCall).toBeDefined();
+
+      const match = emailCall!.html.match(/[?&]token=([^&" ]+)/);
+
+      expect(match).not.toBeNull();
+
+      const rawToken = decodeURIComponent(match![1]!);
+      const tokenHash = createHash("sha256").update(rawToken).digest("hex");
+
+      const token = await prisma.emailVerificationToken.findUnique({
+        where: { tokenHash },
+      });
+
+      expect(token).not.toBeNull();
+      expect(token?.userId).toBe(result.user.id);
+      expect(token?.usedAt).toBeNull();
+      expect(token?.expiresAt.getTime()).toBeGreaterThan(Date.now());
+      expect(tokenHash).not.toBe(rawToken);
+    } finally {
+      await prisma.user.delete({ where: { id: result.user.id } });
+    }
+  });
+
+  test("rejects a duplicate email", async () => {
+    const email = `duplicate-${randomUUID()}@example.com`;
+
+    const first = await registerUser({
+      email,
+      password: "Strong-test-password-123",
+    });
+
+    try {
+      await expect(
+        registerUser({
+          email: email.toUpperCase(),
+          password: "Another-test-password-123",
+        }),
+      ).rejects.toMatchObject({
+        code: "EMAIL_ALREADY_EXISTS",
+      });
+    } finally {
+      await prisma.user.delete({ where: { id: first.user.id } });
+    }
+  });
+
+  test("rejects an empty email or password", async () => {
+    await expect(
+      registerUser({ email: "", password: "Strong-test-password-123" }),
+    ).rejects.toMatchObject({ code: "INVALID_INPUT" });
+
+    await expect(
+      registerUser({
+        email: `empty-${randomUUID()}@example.com`,
+        password: "",
+      }),
+    ).rejects.toMatchObject({ code: "INVALID_INPUT" });
+  });
+
+  test("verifies an email and consumes the token", async () => {
+    const { user, rawToken } = await createVerificationFixture();
+
+    try {
+      const result = await verifyEmail(rawToken);
+
+      expect(result.id).toBe(user.id);
+      expect(result.emailVerifiedAt).toBeInstanceOf(Date);
+
+      const token = await prisma.emailVerificationToken.findFirst({
+        where: { userId: user.id },
+      });
+
+      expect(token?.usedAt).toBeInstanceOf(Date);
+    } finally {
+      await prisma.user.delete({ where: { id: user.id } });
+    }
+  });
+
+  test("rejects an invalid verification token", async () => {
+    await expect(verifyEmail("invalid-token")).rejects.toMatchObject({
+      code: "INVALID_OR_EXPIRED_TOKEN",
+    });
+  });
+
+  test("rejects an expired verification token", async () => {
+    const { user, rawToken } = await createVerificationFixture(
+      new Date(Date.now() - 1_000),
+    );
+
+    try {
+      await expect(verifyEmail(rawToken)).rejects.toMatchObject({
+        code: "INVALID_OR_EXPIRED_TOKEN",
+      });
+    } finally {
+      await prisma.user.delete({ where: { id: user.id } });
+    }
+  });
+
+  test("rejects reuse of a verification token", async () => {
+    const { user, rawToken } = await createVerificationFixture();
+
+    try {
+      await verifyEmail(rawToken);
+
+      await expect(verifyEmail(rawToken)).rejects.toMatchObject({
+        code: "INVALID_OR_EXPIRED_TOKEN",
+      });
+    } finally {
+      await prisma.user.delete({ where: { id: user.id } });
+    }
+  });
+});
+
+describe("Auth service — loginUser", () => {
+  test("logs in a verified user and stores only the session token hash", async () => {
+    const { user, password } = await createLoginFixture();
+
+    try {
+      const result = await loginUser({
+        email: user.email.toUpperCase(),
+        password,
+      });
+
+      expect(result.user.id).toBe(user.id);
+      expect(result.user.email).toBe(user.email);
+      expect(result.session.token).toBeTruthy();
+      expect(result.session.expiresAt.getTime()).toBeGreaterThan(Date.now());
+
+      const tokenHash = createHash("sha256")
+        .update(result.session.token)
+        .digest("hex");
+
+      const session = await prisma.session.findUnique({
+        where: { tokenHash },
+      });
+
+      expect(session).not.toBeNull();
+      expect(session?.userId).toBe(user.id);
+      expect(session?.tokenHash).not.toBe(result.session.token);
+      expect(session?.revokedAt).toBeNull();
+    } finally {
+      await prisma.user.delete({ where: { id: user.id } });
+    }
+  });
+
+  test("rejects an incorrect password", async () => {
+    const { user } = await createLoginFixture();
+
+    try {
+      await expect(
+        loginUser({
+          email: user.email,
+          password: "Wrong-password",
+        }),
+      ).rejects.toMatchObject({ code: "INVALID_CREDENTIALS" });
+    } finally {
+      await prisma.user.delete({ where: { id: user.id } });
+    }
+  });
+
+  test("rejects an unknown email with generic credentials error", async () => {
+    await expect(
+      loginUser({
+        email: `unknown-${randomUUID()}@example.com`,
+        password: "Strong-test-password-123",
+      }),
+    ).rejects.toMatchObject({ code: "INVALID_CREDENTIALS" });
+  });
+
+  test("rejects a user whose email is not verified", async () => {
+    const { user, password } = await createLoginFixture({
+      emailVerified: false,
+    });
+
+    try {
+      await expect(
+        loginUser({ email: user.email, password }),
+      ).rejects.toMatchObject({ code: "EMAIL_NOT_VERIFIED" });
+    } finally {
+      await prisma.user.delete({ where: { id: user.id } });
+    }
+  });
+});
+
+describe("Auth service — logoutUser", () => {
+  test("revokes an active session", async () => {
+    const { user, password } = await createLoginFixture();
+
+    try {
+      const login = await loginUser({ email: user.email, password });
+
+      await logoutUser(login.session.token);
+
+      const tokenHash = createHash("sha256")
+        .update(login.session.token)
+        .digest("hex");
+
+      const session = await prisma.session.findUnique({
+        where: { tokenHash },
+      });
+
+      expect(session?.revokedAt).toBeInstanceOf(Date);
+    } finally {
+      await prisma.user.delete({ where: { id: user.id } });
+    }
+  });
+
+  test("does not change the timestamp when revoking an already-revoked session", async () => {
+    const { user, password } = await createLoginFixture();
+
+    try {
+      const login = await loginUser({ email: user.email, password });
+
+      await logoutUser(login.session.token);
+
+      const tokenHash = createHash("sha256")
+        .update(login.session.token)
+        .digest("hex");
+
+      const firstSession = await prisma.session.findUniqueOrThrow({
+        where: { tokenHash },
+      });
+
+      await logoutUser(login.session.token);
+
+      const secondSession = await prisma.session.findUniqueOrThrow({
+        where: { tokenHash },
+      });
+
+      expect(secondSession.revokedAt?.getTime()).toBe(
+        firstSession.revokedAt?.getTime(),
+      );
+    } finally {
+      await prisma.user.delete({ where: { id: user.id } });
+    }
+  });
+
+  test("does not throw for an unknown token", async () => {
+    await expect(logoutUser(randomUUID())).resolves.toBeUndefined();
+  });
+
+  test("does not throw for an empty token", async () => {
+    await expect(logoutUser("")).resolves.toBeUndefined();
+  });
+});
+
+describe("Auth service — validateSession", () => {
+  test("returns user information for a valid session", async () => {
+    const { user, password } = await createLoginFixture();
+
+    try {
+      const login = await loginUser({ email: user.email, password });
+      const result = await validateSession(login.session.token);
+
+      expect(result?.user.id).toBe(user.id);
+      expect(result?.user.email).toBe(user.email);
+      expect(result?.session.id).toBe(login.session.id);
+    } finally {
+      await prisma.user.delete({ where: { id: user.id } });
+    }
+  });
+
+  test("returns null for an unknown token", async () => {
+    await expect(validateSession(randomUUID())).resolves.toBeNull();
+  });
+
+  test("returns null for an empty token", async () => {
+    await expect(validateSession("")).resolves.toBeNull();
+  });
+
+  test("returns null for a revoked session", async () => {
+    const { user, password } = await createLoginFixture();
+
+    try {
+      const login = await loginUser({ email: user.email, password });
+      await logoutUser(login.session.token);
+
+      await expect(validateSession(login.session.token)).resolves.toBeNull();
+    } finally {
+      await prisma.user.delete({ where: { id: user.id } });
+    }
+  });
+
+  test("returns null for an expired session", async () => {
+    const { user, password } = await createLoginFixture();
+
+    try {
+      const login = await loginUser({ email: user.email, password });
+      const tokenHash = createHash("sha256")
+        .update(login.session.token)
+        .digest("hex");
+
+      await prisma.session.update({
+        where: { tokenHash },
+        data: { expiresAt: new Date(Date.now() - 1_000) },
+      });
+
+      await expect(validateSession(login.session.token)).resolves.toBeNull();
+    } finally {
+      await prisma.user.delete({ where: { id: user.id } });
+    }
+  });
+});
+
+describe("Auth service — requestPasswordReset", () => {
+  test("sends a reset link and stores only the token hash", async () => {
+    const { user } = await createLoginFixture();
+
+    try {
+      const result = await requestPasswordReset(user.email);
+
+      expect(result).toBeUndefined();
+      expect(mockSendEmail).toHaveBeenCalledTimes(1);
+
+      const email = mockSendEmail.mock.calls[0][0];
+      expect(email.to).toBe(user.email);
+      expect(email.subject).toContain("Reset your password");
+
+      const match = email.html.match(/[?&]token=([a-f0-9]{64})/);
+      expect(match).not.toBeNull();
+
+      const rawToken = match![1];
+      const tokenHash = createHash("sha256").update(rawToken).digest("hex");
+
+      const token = await prisma.passwordResetToken.findUnique({
+        where: { tokenHash },
+      });
+
+      expect(token).not.toBeNull();
+      expect(token?.userId).toBe(user.id);
+      expect(token?.usedAt).toBeNull();
+      expect(token?.expiresAt.getTime()).toBeGreaterThan(Date.now());
+      expect(tokenHash).not.toBe(rawToken);
+    } finally {
+      await prisma.user.delete({ where: { id: user.id } });
+    }
+  });
+
+  test("does not reveal whether an email exists", async () => {
+    const unknownEmail = `unknown-${randomUUID()}@example.com`;
+
+    await expect(requestPasswordReset(unknownEmail)).resolves.toBeUndefined();
+  });
+});
+
+describe("Auth service — resetPassword", () => {
+  test("resets the password and consumes the token", async () => {
+    const { user, rawToken, password, tokenHash } =
+      await createPasswordResetFixture();
+
+    const newPassword = "New-test-password-456";
+
+    try {
+      await expect(resetPassword(rawToken, newPassword)).resolves.toEqual({
+        success: true,
+      });
+
+      const updatedUser = await prisma.user.findUniqueOrThrow({
+        where: { id: user.id },
+      });
+
+      expect(updatedUser.passwordHash).not.toBe(password);
+      expect(await argon2.verify(updatedUser.passwordHash, newPassword)).toBe(
+        true,
+      );
+
+      const token = await prisma.passwordResetToken.findUnique({
+        where: { tokenHash },
+      });
+
+      expect(token?.usedAt).toBeInstanceOf(Date);
+
+      await expect(
+        resetPassword(rawToken, "Another-test-password-789"),
+      ).rejects.toMatchObject({
+        code: "INVALID_OR_EXPIRED_TOKEN",
+      });
+    } finally {
+      await prisma.user.delete({ where: { id: user.id } });
+    }
+  });
+
+  test("rejects an invalid reset token", async () => {
+    await expect(
+      resetPassword("invalid-token", "New-test-password-456"),
+    ).rejects.toMatchObject({
+      code: "INVALID_OR_EXPIRED_TOKEN",
+    });
+  });
+
+  test("rejects an expired reset token", async () => {
+    const { user, rawToken } = await createPasswordResetFixture(
+      new Date(Date.now() - 1_000),
+    );
+
+    try {
+      await expect(
+        resetPassword(rawToken, "New-test-password-456"),
+      ).rejects.toMatchObject({
+        code: "INVALID_OR_EXPIRED_TOKEN",
+      });
+    } finally {
+      await prisma.user.delete({ where: { id: user.id } });
+    }
+  });
+
+  test("revokes active sessions after resetting the password", async () => {
+    const { user, password, rawToken } = await createPasswordResetFixture();
+
+    try {
+      const firstLogin = await loginUser({
+        email: user.email,
+        password,
+      });
+
+      const secondLogin = await loginUser({
+        email: user.email,
+        password,
+      });
+
+      await resetPassword(rawToken, "New-test-password-456");
+
+      await expect(
+        validateSession(firstLogin.session.token),
+      ).resolves.toBeNull();
+
+      await expect(
+        validateSession(secondLogin.session.token),
+      ).resolves.toBeNull();
+    } finally {
+      await prisma.user.delete({ where: { id: user.id } });
+    }
+  });
+
+  test("allows the new password and rejects the old password", async () => {
+    const { user, password, rawToken } = await createPasswordResetFixture();
+
+    const newPassword = "New-test-password-456";
+
+    try {
+      await resetPassword(rawToken, newPassword);
+
+      await expect(
+        loginUser({ email: user.email, password }),
+      ).rejects.toMatchObject({
+        code: "INVALID_CREDENTIALS",
+      });
+
+      const login = await loginUser({
+        email: user.email,
+        password: newPassword,
+      });
+
+      expect(login.user.id).toBe(user.id);
+
+      await logoutUser(login.session.token);
+    } finally {
+      await prisma.user.delete({ where: { id: user.id } });
+    }
+  });
+});
