@@ -1,0 +1,493 @@
+import { afterAll, describe, expect, jest, test } from "@jest/globals";
+import request from "supertest";
+import argon2 from "argon2";
+import { createHash, randomUUID } from "node:crypto";
+import {
+  testPrisma as prisma,
+  disconnectTestDatabase,
+} from "../../helpers/database.js";
+
+const mockSendEmail = jest
+  .fn<
+    (options: { to: string; subject: string; html: string }) => Promise<void>
+  >()
+  .mockResolvedValue(undefined);
+
+jest.unstable_mockModule("../../../src/lib/email.js", () => ({
+  sendEmail: mockSendEmail,
+}));
+
+const { default: app } = await import("../../../src/app.js");
+
+async function createVerificationFixture(
+  expiresAt = new Date(Date.now() + 60_000),
+) {
+  const user = await prisma.user.create({
+    data: {
+      email: `verify-${randomUUID()}@example.com`,
+      passwordHash: "test-hash",
+    },
+  });
+
+  const rawToken = randomUUID() + randomUUID();
+  const tokenHash = createHash("sha256").update(rawToken).digest("hex");
+
+  await prisma.emailVerificationToken.create({
+    data: {
+      userId: user.id,
+      tokenHash,
+      expiresAt,
+    },
+  });
+
+  return { user, rawToken };
+}
+
+async function createPasswordResetFixture(
+  expiresAt = new Date(Date.now() + 60_000),
+) {
+  const password = "Old-test-password-123";
+
+  const user = await prisma.user.create({
+    data: {
+      email: `reset-${randomUUID()}@example.com`,
+      passwordHash: await argon2.hash(password, {
+        type: argon2.argon2id,
+      }),
+      emailVerifiedAt: new Date(),
+    },
+  });
+
+  const rawToken = randomUUID() + randomUUID();
+  const tokenHash = createHash("sha256").update(rawToken).digest("hex");
+
+  await prisma.passwordResetToken.create({
+    data: {
+      userId: user.id,
+      tokenHash,
+      expiresAt,
+    },
+  });
+
+  return { user, password, rawToken };
+}
+
+afterAll(async () => {
+  await disconnectTestDatabase();
+});
+
+describe("POST /auth/register", () => {
+  test("registers a user and sends a verification email", async () => {
+    const email = `register-${randomUUID()}@example.com`;
+    const password = "Test-password-123";
+
+    try {
+      const response = await request(app)
+        .post("/auth/register")
+        .send({ email: `  ${email}  `, password });
+
+      expect(response.status).toBe(201);
+      expect(response.body.user.email).toBe(email);
+      expect(response.body.user.passwordHash).toBeUndefined();
+      expect(response.body.verificationToken).toBeUndefined();
+
+      expect(mockSendEmail).toHaveBeenCalledWith(
+        expect.objectContaining({
+          to: email,
+        }),
+      );
+
+      const user = await prisma.user.findUnique({
+        where: { email },
+      });
+
+      expect(user).not.toBeNull();
+      expect(user!.passwordHash).not.toBe(password);
+      expect(await argon2.verify(user!.passwordHash, password)).toBe(true);
+    } finally {
+      await prisma.user.deleteMany({ where: { email } });
+    }
+  });
+
+  test("rejects an invalid email", async () => {
+    const response = await request(app)
+      .post("/auth/register")
+      .send({ email: "not-an-email", password: "Test-password-123" });
+
+    expect(response.status).toBe(400);
+  });
+
+  test("rejects a password shorter than eight characters", async () => {
+    const response = await request(app)
+      .post("/auth/register")
+      .send({ email: "short-password@example.com", password: "short" });
+
+    expect(response.status).toBe(400);
+  });
+});
+
+describe("POST /auth/login", () => {
+  test("logs in a verified user with valid credentials", async () => {
+    const email = `login-${randomUUID()}@example.com`;
+    const password = "Strong-test-password-123";
+
+    const user = await prisma.user.create({
+      data: {
+        email,
+        passwordHash: await argon2.hash(password, {
+          type: argon2.argon2id,
+        }),
+        emailVerifiedAt: new Date(),
+      },
+    });
+
+    try {
+      const response = await request(app)
+        .post("/auth/login")
+        .send({ email, password });
+
+      expect(response.status).toBe(200);
+      expect(response.body.user.id).toBe(user.id);
+      expect(response.body.user.email).toBe(email);
+      expect(response.body.user.passwordHash).toBeUndefined();
+      expect(response.body.session.expiresAt).toBeDefined();
+      expect(response.body.sessionToken).toEqual(expect.any(String));
+
+      const session = await prisma.session.findFirst({
+        where: { userId: user.id },
+      });
+
+      expect(session).not.toBeNull();
+    } finally {
+      await prisma.session.deleteMany({
+        where: { userId: user.id },
+      });
+
+      await prisma.user.delete({
+        where: { id: user.id },
+      });
+    }
+  });
+
+  test("rejects invalid credentials", async () => {
+    const response = await request(app).post("/auth/login").send({
+      email: "missing-user@example.com",
+      password: "Wrong-password-123",
+    });
+
+    expect(response.status).toBe(401);
+  });
+
+  test("rejects login for an unverified user", async () => {
+    const email = `unverified-${randomUUID()}@example.com`;
+    const password = "Strong-test-password-123";
+
+    const user = await prisma.user.create({
+      data: {
+        email,
+        passwordHash: await argon2.hash(password, {
+          type: argon2.argon2id,
+        }),
+        emailVerifiedAt: null,
+      },
+    });
+
+    try {
+      const response = await request(app)
+        .post("/auth/login")
+        .send({ email, password });
+
+      expect(response.status).toBe(403);
+    } finally {
+      await prisma.user.delete({
+        where: { id: user.id },
+      });
+    }
+  });
+});
+
+describe("POST /auth/verify-email", () => {
+  test("verifies an email and consumes the token", async () => {
+    const { user, rawToken } = await createVerificationFixture();
+
+    try {
+      const response = await request(app)
+        .post("/auth/verify-email")
+        .send({ token: rawToken });
+
+      expect(response.status).toBe(200);
+      expect(response.body.user.id).toBe(user.id);
+      expect(response.body.user.emailVerifiedAt).toBeDefined();
+
+      const token = await prisma.emailVerificationToken.findFirst({
+        where: { userId: user.id },
+      });
+
+      expect(token?.usedAt).toBeInstanceOf(Date);
+    } finally {
+      await prisma.user.delete({ where: { id: user.id } });
+    }
+  });
+
+  test("rejects an invalid token", async () => {
+    const response = await request(app)
+      .post("/auth/verify-email")
+      .send({ token: "invalid-token" });
+
+    expect(response.status).toBe(400);
+  });
+
+  test("rejects an expired token", async () => {
+    const { user, rawToken } = await createVerificationFixture(
+      new Date(Date.now() - 1_000),
+    );
+
+    try {
+      const response = await request(app)
+        .post("/auth/verify-email")
+        .send({ token: rawToken });
+
+      expect(response.status).toBe(400);
+    } finally {
+      await prisma.user.delete({ where: { id: user.id } });
+    }
+  });
+
+  test("rejects reuse of a verification token", async () => {
+    const { user, rawToken } = await createVerificationFixture();
+
+    try {
+      const firstResponse = await request(app)
+        .post("/auth/verify-email")
+        .send({ token: rawToken });
+
+      expect(firstResponse.status).toBe(200);
+
+      const secondResponse = await request(app)
+        .post("/auth/verify-email")
+        .send({ token: rawToken });
+
+      expect(secondResponse.status).toBe(400);
+    } finally {
+      await prisma.user.delete({ where: { id: user.id } });
+    }
+  });
+});
+
+describe("POST /auth/request-password-reset", () => {
+  test("sends a reset email for an existing email", async () => {
+    const email = `reset-request-${randomUUID()}@example.com`;
+
+    const user = await prisma.user.create({
+      data: {
+        email,
+        passwordHash: await argon2.hash("Old-test-password-123", {
+          type: argon2.argon2id,
+        }),
+        emailVerifiedAt: new Date(),
+      },
+    });
+
+    try {
+      const response = await request(app)
+        .post("/auth/request-password-reset")
+        .send({ email });
+
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual({
+        message:
+          "If an account exists for that email, password reset instructions will be sent.",
+      });
+      expect(response.body.resetToken).toBeUndefined();
+
+      expect(mockSendEmail).toHaveBeenCalledWith(
+        expect.objectContaining({
+          to: email,
+        }),
+      );
+
+      const token = await prisma.passwordResetToken.findFirst({
+        where: { userId: user.id },
+      });
+
+      expect(token).not.toBeNull();
+      expect(token!.usedAt).toBeNull();
+      expect(token!.tokenHash).toMatch(/^[a-f0-9]{64}$/);
+    } finally {
+      await prisma.user.delete({ where: { id: user.id } });
+    }
+  });
+
+  test("does not reveal whether an email exists", async () => {
+    const email = `unknown-${randomUUID()}@example.com`;
+
+    const response = await request(app)
+      .post("/auth/request-password-reset")
+      .send({ email });
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      message:
+        "If an account exists for that email, password reset instructions will be sent.",
+    });
+  });
+
+  test("rejects an invalid email", async () => {
+    const response = await request(app)
+      .post("/auth/request-password-reset")
+      .send({ email: "not-an-email" });
+
+    expect(response.status).toBe(400);
+  });
+});
+
+describe("POST /auth/reset-password", () => {
+  test("resets the password and invalidates existing sessions", async () => {
+    const { user, password, rawToken } = await createPasswordResetFixture();
+
+    try {
+      const loginResponse = await request(app)
+        .post("/auth/login")
+        .send({ email: user.email, password });
+
+      expect(loginResponse.status).toBe(200);
+
+      const response = await request(app).post("/auth/reset-password").send({
+        token: rawToken,
+        newPassword: "New-test-password-456",
+      });
+
+      expect(response.status).toBe(200);
+      expect(response.body.message).toBe("Password reset successful");
+
+      const oldPasswordResponse = await request(app)
+        .post("/auth/login")
+        .send({ email: user.email, password });
+
+      expect(oldPasswordResponse.status).toBe(401);
+
+      const newPasswordResponse = await request(app).post("/auth/login").send({
+        email: user.email,
+        password: "New-test-password-456",
+      });
+
+      expect(newPasswordResponse.status).toBe(200);
+
+      const tokenHash = createHash("sha256").update(rawToken).digest("hex");
+
+      const token = await prisma.passwordResetToken.findUnique({
+        where: { tokenHash },
+      });
+
+      expect(token?.usedAt).toBeInstanceOf(Date);
+    } finally {
+      await prisma.user.delete({ where: { id: user.id } });
+    }
+  });
+
+  test("rejects an invalid reset token", async () => {
+    const response = await request(app).post("/auth/reset-password").send({
+      token: "invalid-token",
+      newPassword: "New-test-password-456",
+    });
+
+    expect(response.status).toBe(400);
+  });
+
+  test("rejects an expired reset token", async () => {
+    const { user, rawToken } = await createPasswordResetFixture(
+      new Date(Date.now() - 1_000),
+    );
+
+    try {
+      const response = await request(app).post("/auth/reset-password").send({
+        token: rawToken,
+        newPassword: "New-test-password-456",
+      });
+
+      expect(response.status).toBe(400);
+    } finally {
+      await prisma.user.delete({ where: { id: user.id } });
+    }
+  });
+
+  test("rejects a password shorter than eight characters", async () => {
+    const response = await request(app).post("/auth/reset-password").send({
+      token: "some-token",
+      newPassword: "short",
+    });
+
+    expect(response.status).toBe(400);
+  });
+});
+
+describe("POST /auth/logout", () => {
+  test("rejects a request without a token", async () => {
+    const response = await request(app).post("/auth/logout");
+
+    expect(response.status).toBe(401);
+    expect(response.body.error.code).toBe("UNAUTHENTICATED");
+  });
+
+  test("rejects an invalid session token", async () => {
+    const response = await request(app)
+      .post("/auth/logout")
+      .set("Authorization", "Bearer invalid-session-token");
+
+    expect(response.status).toBe(401);
+    expect(response.body.error.code).toBe("UNAUTHENTICATED");
+  });
+
+  test("logs out a user and revokes their session", async () => {
+    const email = `logout-${randomUUID()}@example.com`;
+    const password = "Strong-test-password-123";
+
+    const user = await prisma.user.create({
+      data: {
+        email,
+        passwordHash: await argon2.hash(password, {
+          type: argon2.argon2id,
+        }),
+        emailVerifiedAt: new Date(),
+      },
+    });
+
+    try {
+      const loginResponse = await request(app)
+        .post("/auth/login")
+        .send({ email, password });
+
+      expect(loginResponse.status).toBe(200);
+
+      const token = loginResponse.body.sessionToken as string;
+
+      const logoutResponse = await request(app)
+        .post("/auth/logout")
+        .set("Authorization", `Bearer ${token}`);
+
+      expect(logoutResponse.status).toBe(200);
+      expect(logoutResponse.body.message).toBe("Logout successful");
+
+      const session = await prisma.session.findFirst({
+        where: { userId: user.id },
+      });
+
+      expect(session?.revokedAt).toBeInstanceOf(Date);
+
+      // The revoked token must no longer authenticate requests.
+      const reuseResponse = await request(app)
+        .post("/auth/logout")
+        .set("Authorization", `Bearer ${token}`);
+
+      expect(reuseResponse.status).toBe(401);
+    } finally {
+      await prisma.session.deleteMany({
+        where: { userId: user.id },
+      });
+
+      await prisma.user.delete({
+        where: { id: user.id },
+      });
+    }
+  });
+});
