@@ -5,6 +5,7 @@ import {
   disconnectTestDatabase,
 } from "../helpers/database.js";
 import {
+  consumeEmailVerificationToken,
   createEmailVerificationToken,
   findEmailVerificationTokenByHash,
 } from "../../src/repositories/email-verification-token.repository.js";
@@ -50,5 +51,38 @@ describe("Email verification token repository", () => {
     const result = await findEmailVerificationTokenByHash(randomUUID());
 
     expect(result).toBeNull();
+  });
+
+  test("consumes an unused, unexpired token only once", async () => {
+    const user = await prisma.user.create({
+      data: {
+        email: `verification-${randomUUID()}@example.com`,
+        passwordHash: "test-hash",
+      },
+    });
+
+    const tokenHash = randomUUID();
+    const now = new Date();
+
+    try {
+      await createEmailVerificationToken({
+        userId: user.id,
+        tokenHash,
+        expiresAt: new Date(now.getTime() + 60_000),
+      });
+
+      const first = await prisma.$transaction((tx) =>
+        consumeEmailVerificationToken(tx, tokenHash, now),
+      );
+
+      const second = await prisma.$transaction((tx) =>
+        consumeEmailVerificationToken(tx, tokenHash, now),
+      );
+
+      expect(first.count).toBe(1);
+      expect(second.count).toBe(0);
+    } finally {
+      await prisma.user.delete({ where: { id: user.id } });
+    }
   });
 });

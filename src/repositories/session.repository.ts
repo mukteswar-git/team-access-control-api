@@ -1,4 +1,5 @@
 import { prisma } from "../lib/prisma.js";
+import type { DatabaseClient } from "../lib/prisma.js";
 
 type CreateSessionData = {
   userId: string;
@@ -6,8 +7,11 @@ type CreateSessionData = {
   expiresAt: Date;
 };
 
-export function createSession(data: CreateSessionData) {
-  return prisma.session.create({
+export function createSession(
+  data: CreateSessionData,
+  db: DatabaseClient = prisma,
+) {
+  return db.session.create({
     data: {
       userId: data.userId,
       tokenHash: data.tokenHash,
@@ -16,14 +20,21 @@ export function createSession(data: CreateSessionData) {
   });
 }
 
-export function findSessionByTokenHash(tokenHash: string) {
-  return prisma.session.findUnique({
+export function findSessionByTokenHash(
+  tokenHash: string,
+  db: DatabaseClient = prisma,
+) {
+  return db.session.findUnique({
     where: { tokenHash },
+    include: { user: true },
   });
 }
 
-export function revokeSessionByTokenHash(tokenHash: string) {
-  return prisma.session.updateMany({
+export function revokeSessionByTokenHash(
+  tokenHash: string,
+  db: DatabaseClient = prisma,
+) {
+  return db.session.updateMany({
     where: {
       tokenHash,
       revokedAt: null,
@@ -34,10 +45,28 @@ export function revokeSessionByTokenHash(tokenHash: string) {
   });
 }
 
-export function revokeAllSessionsForUser(userId: string) {
-  return prisma.session.updateMany({
+export function revokeAllSessionsForUser(
+  userId: string,
+  db: DatabaseClient = prisma,
+) {
+  return db.session.updateMany({
     where: {
       userId,
+      revokedAt: null,
+    },
+    data: {
+      revokedAt: new Date(),
+    },
+  });
+}
+
+export function revokeSessionById(
+  sessionId: string,
+  db: DatabaseClient = prisma,
+) {
+  return db.session.updateMany({
+    where: {
+      id: sessionId,
       revokedAt: null,
     },
     data: {

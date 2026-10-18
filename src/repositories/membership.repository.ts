@@ -1,4 +1,4 @@
-import { prisma } from "../lib/prisma.js";
+import { prisma, type DatabaseClient } from "../lib/prisma.js";
 
 export function findMembershipById(id: string) {
   return prisma.membership.findUnique({
@@ -24,8 +24,9 @@ export function findMembershipById(id: string) {
 export function findMembershipByUserAndOrganization(
   userId: string,
   organizationId: string,
+  db: DatabaseClient = prisma,
 ) {
-  return prisma.membership.findUnique({
+  return db.membership.findUnique({
     where: {
       userId_organizationId: {
         userId,
@@ -35,7 +36,15 @@ export function findMembershipByUserAndOrganization(
     include: {
       user: true,
       organization: true,
-      role: true,
+      role: {
+        include: {
+          rolePermissions: {
+            include: {
+              permission: true,
+            },
+          },
+        },
+      },
       adminMembership: {
         include: {
           role: true,
