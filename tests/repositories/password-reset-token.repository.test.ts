@@ -5,6 +5,7 @@ import {
   disconnectTestDatabase,
 } from "../helpers/database.js";
 import {
+  consumePasswordResetToken,
   createPasswordResetToken,
   findPasswordResetTokenByHash,
 } from "../../src/repositories/password-reset-token.repository.js";
@@ -50,5 +51,38 @@ describe("Password reset token repository", () => {
     const result = await findPasswordResetTokenByHash(randomUUID());
 
     expect(result).toBeNull();
+  });
+
+  test("consumes an unused, unexpired token only once", async () => {
+    const user = await prisma.user.create({
+      data: {
+        email: `password-reset-${randomUUID()}@example.com`,
+        passwordHash: "test-hash",
+      },
+    });
+
+    const tokenHash = randomUUID();
+    const now = new Date();
+
+    try {
+      await createPasswordResetToken({
+        userId: user.id,
+        tokenHash,
+        expiresAt: new Date(now.getTime() + 60_000),
+      });
+
+      const first = await prisma.$transaction((tx) =>
+        consumePasswordResetToken(tx, tokenHash, now),
+      );
+
+      const second = await prisma.$transaction((tx) =>
+        consumePasswordResetToken(tx, tokenHash, now),
+      );
+
+      expect(first.count).toBe(1);
+      expect(second.count).toBe(0);
+    } finally {
+      await prisma.user.delete({ where: { id: user.id } });
+    }
   });
 });
