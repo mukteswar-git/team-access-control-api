@@ -332,6 +332,123 @@ describe("Authorization service", () => {
     }
   });
 
+  test("denies an Admin access to another Admin's Member", async () => {
+    const adminOne = await createTestUser();
+    const adminTwo = await createTestUser();
+    const manager = await createTestUser();
+    const member = await createTestUser();
+    const organization = await createTestOrganization();
+
+    try {
+      await prisma.membership.create({
+        data: {
+          userId: adminOne.id,
+          organizationId: organization.id,
+          roleId: await getRoleId("admin"),
+        },
+      });
+
+      const adminTwoMembership = await prisma.membership.create({
+        data: {
+          userId: adminTwo.id,
+          organizationId: organization.id,
+          roleId: await getRoleId("admin"),
+        },
+      });
+
+      const managerMembership = await prisma.membership.create({
+        data: {
+          userId: manager.id,
+          organizationId: organization.id,
+          roleId: await getRoleId("manager"),
+          adminMembershipId: adminTwoMembership.id,
+        },
+      });
+
+      const memberMembership = await prisma.membership.create({
+        data: {
+          userId: member.id,
+          organizationId: organization.id,
+          roleId: await getRoleId("member"),
+          managerMembershipId: managerMembership.id,
+        },
+      });
+
+      await expect(
+        canManageMembership(adminOne.id, organization.id, memberMembership.id),
+      ).resolves.toBe(false);
+    } finally {
+      await prisma.membership.deleteMany({
+        where: { organizationId: organization.id },
+      });
+
+      await prisma.user.deleteMany({
+        where: {
+          id: {
+            in: [adminOne.id, adminTwo.id, manager.id, member.id],
+          },
+        },
+      });
+
+      await prisma.organization.delete({
+        where: { id: organization.id },
+      });
+    }
+  });
+
+  test("allows an Admin to manage a Member assigned to their Manager", async () => {
+    const admin = await createTestUser();
+    const manager = await createTestUser();
+    const member = await createTestUser();
+    const organization = await createTestOrganization();
+
+    try {
+      const adminMembership = await prisma.membership.create({
+        data: {
+          userId: admin.id,
+          organizationId: organization.id,
+          roleId: await getRoleId("admin"),
+        },
+      });
+
+      const managerMembership = await prisma.membership.create({
+        data: {
+          userId: manager.id,
+          organizationId: organization.id,
+          roleId: await getRoleId("manager"),
+          adminMembershipId: adminMembership.id,
+        },
+      });
+
+      const memberMembership = await prisma.membership.create({
+        data: {
+          userId: member.id,
+          organizationId: organization.id,
+          roleId: await getRoleId("member"),
+          managerMembershipId: managerMembership.id,
+        },
+      });
+
+      await expect(
+        canManageMembership(admin.id, organization.id, memberMembership.id),
+      ).resolves.toBe(true);
+    } finally {
+      await prisma.membership.deleteMany({
+        where: { organizationId: organization.id },
+      });
+
+      await prisma.user.deleteMany({
+        where: {
+          id: { in: [admin.id, manager.id, member.id] },
+        },
+      });
+
+      await prisma.organization.delete({
+        where: { id: organization.id },
+      });
+    }
+  });
+
   test("allows an Admin to manage an unassigned Member", async () => {
     const admin = await createTestUser();
     const member = await createTestUser();
@@ -571,6 +688,51 @@ describe("Authorization service", () => {
     }
   });
 
+  test("denies an Admin's action when they lack the required permission", async () => {
+    const admin = await createTestUser();
+    const member = await createTestUser();
+    const organization = await createTestOrganization();
+
+    try {
+      await prisma.membership.create({
+        data: {
+          userId: admin.id,
+          organizationId: organization.id,
+          roleId: await getRoleId("admin"),
+        },
+      });
+
+      const memberMembership = await prisma.membership.create({
+        data: {
+          userId: member.id,
+          organizationId: organization.id,
+          roleId: await getRoleId("member"),
+        },
+      });
+
+      const result = await canPerformMembershipAction(
+        admin.id,
+        organization.id,
+        memberMembership.id,
+        "permission.that.does.not.exist",
+      );
+
+      expect(result).toBe(false);
+    } finally {
+      await prisma.membership.deleteMany({
+        where: { organizationId: organization.id },
+      });
+
+      await prisma.user.deleteMany({
+        where: { id: { in: [admin.id, member.id] } },
+      });
+
+      await prisma.organization.delete({
+        where: { id: organization.id },
+      });
+    }
+  });
+
   test("allows a Super User to manage an Admin in the same organization", async () => {
     const superUser = await createTestUser();
     const admin = await createTestUser();
@@ -607,6 +769,51 @@ describe("Authorization service", () => {
       await prisma.user.deleteMany({
         where: { id: { in: [superUser.id, admin.id] } },
       });
+      await prisma.organization.delete({
+        where: { id: organization.id },
+      });
+    }
+  });
+
+  test("allows a Super User to manage an unassigned Manager", async () => {
+    const superUser = await createTestUser();
+    const manager = await createTestUser();
+    const organization = await createTestOrganization();
+
+    try {
+      await prisma.membership.create({
+        data: {
+          userId: superUser.id,
+          organizationId: organization.id,
+          roleId: await getRoleId("super_user"),
+        },
+      });
+
+      const managerMembership = await prisma.membership.create({
+        data: {
+          userId: manager.id,
+          organizationId: organization.id,
+          roleId: await getRoleId("manager"),
+          adminMembershipId: null,
+        },
+      });
+
+      const result = await canManageMembership(
+        superUser.id,
+        organization.id,
+        managerMembership.id,
+      );
+
+      expect(result).toBe(true);
+    } finally {
+      await prisma.membership.deleteMany({
+        where: { organizationId: organization.id },
+      });
+
+      await prisma.user.deleteMany({
+        where: { id: { in: [superUser.id, manager.id] } },
+      });
+
       await prisma.organization.delete({
         where: { id: organization.id },
       });
@@ -883,7 +1090,7 @@ describe("Authorization service", () => {
     }
   });
 
-  test("denies a Super User from directly demoting another Super User", async () => {
+  test("denies a Super User from changing their own role", async () => {
     const superUser = await createTestUser();
     const target = await createTestUser();
     const organization = await createTestOrganization();
