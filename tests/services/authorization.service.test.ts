@@ -111,6 +111,38 @@ describe("Authorization service", () => {
     }
   });
 
+  test("denies an unknown permission code", async () => {
+    const user = await createTestUser();
+    const organization = await createTestOrganization();
+    const roleId = await getRoleId("member");
+
+    try {
+      await prisma.membership.create({
+        data: {
+          userId: user.id,
+          organizationId: organization.id,
+          roleId,
+        },
+      });
+
+      const result = await hasPermission(
+        user.id,
+        organization.id,
+        "permission.that.does.not.exist",
+      );
+
+      expect(result).toBe(false);
+    } finally {
+      await prisma.membership.deleteMany({
+        where: { userId: user.id },
+      });
+      await prisma.user.delete({ where: { id: user.id } });
+      await prisma.organization.delete({
+        where: { id: organization.id },
+      });
+    }
+  });
+
   test("denies access when the user has no membership in the organization", async () => {
     const user = await createTestUser();
     const organization = await createTestOrganization();
