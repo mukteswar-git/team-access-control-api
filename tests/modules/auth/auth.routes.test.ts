@@ -124,6 +124,48 @@ describe("POST /auth/register", () => {
 
     expect(response.status).toBe(400);
   });
+
+  test("rejects registration with an existing email", async () => {
+    const email = `duplicate-${randomUUID()}@example.com`;
+    const password = "Test-password-123";
+
+    try {
+      // Register the user for the first time.
+      const firstResponse = await request(app)
+        .post("/auth/register")
+        .send({ email, password });
+
+      expect(firstResponse.status).toBe(201);
+
+      const originalUser = await prisma.user.findUnique({
+        where: { email },
+      });
+
+      expect(originalUser).not.toBeNull();
+
+      // Attempt to register again with the same email.
+      const duplicateResponse = await request(app)
+        .post("/auth/register")
+        .send({ email, password });
+
+      expect(duplicateResponse.status).toBe(409);
+
+      // Ensure the original user still exists.
+      const users = await prisma.user.findMany({
+        where: { email },
+      });
+
+      expect(users).toHaveLength(1);
+      expect(users[0].id).toBe(originalUser!.id);
+      if (!originalUser) {
+        throw new Error("Expected the registered user to exist");
+      }
+
+      expect(users[0].id).toBe(originalUser.id);
+    } finally {
+      await prisma.user.deleteMany({ where: { email } });
+    }
+  });
 });
 
 describe("POST /auth/login", () => {
