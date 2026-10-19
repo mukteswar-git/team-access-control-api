@@ -1,6 +1,20 @@
 import { findMembershipByUserAndOrganization } from "../repositories/membership.repository.js";
 import { prisma, type DatabaseClient } from "../lib/prisma.js";
 
+export async function hasOrganizationMembership(
+  userId: string,
+  organizationId: string,
+  db: DatabaseClient = prisma,
+): Promise<boolean> {
+  const membership = await findMembershipByUserAndOrganization(
+    userId,
+    organizationId,
+    db,
+  );
+
+  return membership !== null;
+}
+
 export async function hasPermission(
   userId: string,
   organizationId: string,

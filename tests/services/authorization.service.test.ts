@@ -8,6 +8,7 @@ import {
   canManageMembership,
   canPerformMembershipAction,
   canChangeMembershipRole,
+  hasOrganizationMembership,
   hasPermission,
 } from "../../src/services/authorization.service.js";
 
@@ -46,6 +47,79 @@ describe("Authorization service", () => {
 
     return role.id;
   }
+
+  test("confirms membership in the requested organization", async () => {
+    const user = await createTestUser();
+    const organization = await createTestOrganization();
+
+    try {
+      await prisma.membership.create({
+        data: {
+          userId: user.id,
+          organizationId: organization.id,
+          roleId: await getRoleId("member"),
+        },
+      });
+
+      await expect(
+        hasOrganizationMembership(user.id, organization.id),
+      ).resolves.toBe(true);
+    } finally {
+      await prisma.membership.deleteMany({
+        where: { userId: user.id },
+      });
+      await prisma.user.delete({ where: { id: user.id } });
+      await prisma.organization.delete({
+        where: { id: organization.id },
+      });
+    }
+  });
+
+  test("denies membership validation when the user has no membership", async () => {
+    const user = await createTestUser();
+    const organization = await createTestOrganization();
+
+    try {
+      await expect(
+        hasOrganizationMembership(user.id, organization.id),
+      ).resolves.toBe(false);
+    } finally {
+      await prisma.user.delete({ where: { id: user.id } });
+      await prisma.organization.delete({
+        where: { id: organization.id },
+      });
+    }
+  });
+
+  test("denies membership validation for a different organization", async () => {
+    const user = await createTestUser();
+    const organizationA = await createTestOrganization();
+    const organizationB = await createTestOrganization();
+
+    try {
+      await prisma.membership.create({
+        data: {
+          userId: user.id,
+          organizationId: organizationA.id,
+          roleId: await getRoleId("member"),
+        },
+      });
+
+      await expect(
+        hasOrganizationMembership(user.id, organizationB.id),
+      ).resolves.toBe(false);
+    } finally {
+      await prisma.membership.deleteMany({
+        where: { userId: user.id },
+      });
+      await prisma.user.delete({ where: { id: user.id } });
+      await prisma.organization.deleteMany({
+        where: {
+          id: { in: [organizationA.id, organizationB.id] },
+        },
+      });
+    }
+  });
 
   test("grants a permission assigned to the user's role", async () => {
     const user = await createTestUser();
