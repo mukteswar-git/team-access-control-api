@@ -78,6 +78,63 @@ describe("requireAuth middleware", () => {
     }
   });
 
+  test("rejects a revoked session", async () => {
+    const email = `revoked-${randomUUID()}@example.com`;
+    const password = "Strong-test-password-123";
+
+    const user = await testPrisma.user.create({
+      data: {
+        email,
+        passwordHash: await argon2.hash(password, {
+          type: argon2.argon2id,
+        }),
+        emailVerifiedAt: new Date(),
+      },
+    });
+
+    try {
+      const app = (await import("../../src/app.js")).default;
+
+      const login = await request(app)
+        .post("/auth/login")
+        .send({ email, password });
+
+      expect(login.status).toBe(200);
+
+      const sessionToken = login.body.sessionToken;
+
+      // The token should work before logout.
+      const beforeLogout = await request(protectedApp)
+        .get("/protected")
+        .set("Authorization", `Bearer ${sessionToken}`);
+
+      expect(beforeLogout.status).toBe(200);
+
+      // Revoke the session through the actual logout endpoint.
+      const logout = await request(app)
+        .post("/auth/logout")
+        .set("Authorization", `Bearer ${sessionToken}`);
+
+      expect(logout.status).toBe(200);
+
+      // The same token must no longer authorize protected requests.
+      const afterLogout = await request(protectedApp)
+        .get("/protected")
+        .set("Authorization", `Bearer ${sessionToken}`);
+
+      expect(afterLogout.status).toBe(401);
+      expect(afterLogout.body.error.code).toBe("UNAUTHENTICATED");
+    } finally {
+      await testPrisma.session.deleteMany({
+        where: { userId: user.id },
+      });
+
+      await testPrisma.user.delete({
+        where: { id: user.id },
+      });
+    }
+  });
+
   test("rejects an expired session", async () => {
     const email = `expired-${randomUUID()}@example.com`;
     const password = "Strong-test-password-123";

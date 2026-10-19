@@ -2,10 +2,10 @@ import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, test } from "@jest/globals";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "../../src/generated/prisma/client.js";
+import { env } from "../../src/config/env.js";
 
 const adapter = new PrismaPg({
-  connectionString:
-    "postgresql://postgres:postgres@localhost:5432/team_access_control_test",
+  connectionString: env.DATABASE_URL,
 });
 
 const prisma = new PrismaClient({
