@@ -1,12 +1,40 @@
 import { z } from "zod";
 import { InvitationError } from "./invitation.errors.js";
 import { normalizeEmail } from "../utils/normalize-email.js";
-import { hasPermission } from "./authorization.service.js";
+import { canRevokeInvitation, hasPermission } from "./authorization.service.js";
 import { findMembershipByUserAndOrganization } from "../repositories/membership.repository.js";
 import { prisma, type DatabaseClient } from "../lib/prisma.js";
 import { createHash, randomBytes } from "node:crypto";
 import { INVITATION_TOKEN_TTL_MS } from "../constants/auth.js";
-import { findPendingInvitation } from "../repositories/invitation.repository.js";
+import {
+  findInvitationById,
+  findPendingInvitation
+} from "../repositories/invitation.repository.js";
+
+export type InvitationStatus = "pending" | "expired" | "revoked" | "accepted";
+
+export function getInvitationStatus(
+  invitation: {
+    expiresAt: Date;
+    acceptedAt: Date | null;
+    revokedAt: Date | null;
+  },
+  now: Date = new Date(),
+): InvitationStatus {
+  if (invitation.acceptedAt !== null) {
+    return "accepted";
+  }
+
+  if (invitation.revokedAt !== null) {
+    return "revoked";
+  }
+
+  if (invitation.expiresAt <= now) {
+    return "expired";
+  }
+
+  return "pending";
+}
 
 const createInvitationSchema = z.object({
   email: z.string().trim().email(),
@@ -353,6 +381,128 @@ export async function createInvitation(
     return {
       invitation: safeInvitation,
       token,
+    };
+  });
+}
+
+export async function revokeInvitation(
+  actorUserId: string,
+  organizationId: string,
+  invitationId: string,
+  db: DatabaseClient = prisma,
+) {
+  if (!actorUserId.trim() || !organizationId.trim() || !invitationId.trim()) {
+    throw new InvitationError(
+      "INVALID_INPUT",
+      "User ID, organization ID, and invitation ID are required.",
+    );
+  }
+
+  return db.$transaction(async (tx) => {
+    const invitation = await findInvitationById(
+      invitationId,
+      organizationId,
+      tx,
+    );
+
+    if (!invitation) {
+      throw new InvitationError(
+        "INVITATION_NOT_FOUND",
+        "Invitation not found.",
+      );
+    }
+
+    const allowed = await hasPermission(
+      actorUserId,
+      organizationId,
+      "invitation.revoke",
+      tx,
+    );
+
+    if (!allowed) {
+      throw new InvitationError(
+        "FORBIDDEN",
+        "You are not authorized to revoke invitations in this organization.",
+      );
+    }
+
+    const canRevoke = await canRevokeInvitation(
+      actorUserId,
+      organizationId,
+      invitation,
+      tx,
+    );
+
+    if (!canRevoke) {
+      throw new InvitationError(
+        "FORBIDDEN",
+        "You are not authorized to revoke this invitation.",
+      );
+    }
+
+    const status = getInvitationStatus(invitation);
+
+    if (status !== "pending") {
+      throw new InvitationError(
+        "INVALID_INVITATION_STATE",
+        `Cannot revoke an invitation with status "${status}".`,
+      );
+    }
+
+    const actor = await findMembershipByUserAndOrganization(
+      actorUserId,
+      organizationId,
+      tx,
+    );
+
+    if (!actor) {
+      throw new InvitationError(
+        "FORBIDDEN",
+        "You do not have access to this organization.",
+      );
+    }
+
+    const now = new Date();
+
+    const result = await tx.invitation.updateMany({
+      where: {
+        id: invitation.id,
+        organizationId,
+        acceptedAt: null,
+        revokedAt: null,
+        expiresAt: { gt: now },
+      },
+      data: {
+        revokedAt: now,
+      },
+    });
+
+    if (result.count !== 1) {
+      throw new InvitationError(
+        "INVALID_INVITATION_STATE",
+        "Invitation is no longer pending.",
+      );
+    }
+
+    await tx.auditLog.create({
+      data: {
+        organizationId,
+        actorUserId,
+        actorMembershipId: actor.id,
+        action: "invitation.revoked",
+        result: "success",
+        targetType: "invitation",
+        targetId: invitation.id,
+        metadata: {
+          invitedEmail: invitation.invitedEmail,
+        },
+      },
+    });
+
+    return {
+      invitationId: invitation.id,
+      status: "revoked" as const,
+      revokedAt: now,
     };
   });
 }

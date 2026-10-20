@@ -15,3 +15,19 @@ export async function findPendingInvitation(
     },
   });
 }
+
+export async function findInvitationById(
+  invitationId: string,
+  organizationId: string,
+  db: DatabaseClient = prisma,
+) {
+  return db.invitation.findFirst({
+    where: {
+      id: invitationId,
+      organizationId,
+    },
+    include: {
+      role: true,
+    },
+  });
+}
