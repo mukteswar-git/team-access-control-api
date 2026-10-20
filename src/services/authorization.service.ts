@@ -96,6 +96,66 @@ export async function canManageMembership(
   return false;
 }
 
+export async function canRevokeInvitation(
+  actorUserId: string,
+  organizationId: string,
+  invitation: {
+    role: { code: string };
+    adminMembershipId: string | null;
+    managerMembershipId: string | null;
+    createdByMembershipId: string | null;
+  },
+  db: DatabaseClient = prisma,
+): Promise<boolean> {
+  const actor = await findMembershipByUserAndOrganization(
+    actorUserId,
+    organizationId,
+    db,
+  );
+
+  if (!actor) return false;
+
+  const actorRole = actor.role.code;
+  const targetRole = invitation.role.code;
+
+  if (actorRole === "super_user") return true;
+
+  if (actorRole === "admin") {
+    if (targetRole === "admin" || targetRole === "super_user") {
+      return false;
+    }
+
+    if (targetRole === "manager") {
+      return invitation.adminMembershipId === actor.id;
+    }
+
+    if (targetRole === "member") {
+      if (invitation.adminMembershipId !== null) return false;
+
+      if (invitation.managerMembershipId === null) return true;
+
+      return isManagerAssignedToAdmin(
+        invitation.managerMembershipId,
+        actor.id,
+        organizationId,
+        db,
+      );
+    }
+
+    return false;
+  }
+
+  if (actorRole === "manager") {
+    return (
+      targetRole === "member" &&
+      invitation.managerMembershipId === actor.id &&
+      invitation.createdByMembershipId === actor.id
+    );
+  }
+
+  return false;
+}
+
 async function isManagerAssignedToAdmin(
   managerMembershipId: string,
   adminMembershipId: string,
