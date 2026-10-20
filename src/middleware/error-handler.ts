@@ -10,6 +10,7 @@ const errorHandler: ErrorRequestHandler = (err, _req, res, _next) => {
       FORBIDDEN: 403,
       ORGANIZATION_NOT_FOUND: 404,
       SUPER_USER_ROLE_NOT_CONFIGURED: 500,
+      OWNERSHIP_TRANSFER_TARGET_INVALID: 400,
     };
 
     res.status(statusCodes[err.code]).json({
