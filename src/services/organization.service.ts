@@ -141,3 +141,169 @@ export async function getOrganizationForUser(
 
   return organization;
 }
+
+export async function transferOrganizationOwnership(
+  actorUserId: string,
+  organizationId: string,
+  targetMembershipId: string,
+  db: PrismaClient = prisma,
+) {
+  const parsedUserId = userIdSchema.safeParse(actorUserId);
+  const parsedOrganizationId = organizationIdSchema.safeParse(organizationId);
+  const parsedTargetMembershipId = z
+    .string()
+    .uuid("Target membership ID must be a valid UUID")
+    .safeParse(targetMembershipId);
+
+  if (
+    !parsedUserId.success ||
+    !parsedOrganizationId.success ||
+    !parsedTargetMembershipId.success
+  ) {
+    throw new OrganizationError(
+      "INVALID_INPUT",
+      "Ownership transfer input is invalid",
+    );
+  }
+
+  return db.$transaction(async (tx) => {
+    // Serialize ownership transfers for this organization.
+    const organizations = await tx.$queryRaw<{ id: string }[]>`
+      SELECT id
+      FROM organizations
+      WHERE id = ${parsedOrganizationId.data}::uuid
+      FOR UPDATE
+    `;
+
+    if (organizations.length === 0) {
+      throw new OrganizationError(
+        "ORGANIZATION_NOT_FOUND",
+        "Organization not found",
+      );
+    }
+
+    const actor = await tx.membership.findUnique({
+      where: {
+        userId_organizationId: {
+          userId: parsedUserId.data,
+          organizationId: parsedOrganizationId.data,
+        },
+      },
+      include: { role: true },
+    });
+
+    if (!actor || actor.role.code !== "super_user") {
+      throw new OrganizationError(
+        "FORBIDDEN",
+        "Only the current Super User can transfer organization ownership",
+      );
+    }
+
+    const target = await tx.membership.findFirst({
+      where: {
+        id: parsedTargetMembershipId.data,
+        organizationId: parsedOrganizationId.data,
+      },
+      include: { role: true },
+    });
+
+    if (
+      !target ||
+      target.id === actor.id ||
+      target.role.code === "super_user"
+    ) {
+      throw new OrganizationError(
+        "OWNERSHIP_TRANSFER_TARGET_INVALID",
+        "Target must be another eligible member of this organization",
+      );
+    }
+
+    const roles = await tx.role.findMany({
+      where: {
+        code: { in: ["super_user", "admin"] },
+      },
+      select: { id: true, code: true },
+    });
+
+    const superUserRole = roles.find((role) => role.code === "super_user");
+    const adminRole = roles.find((role) => role.code === "admin");
+
+    if (!superUserRole || !adminRole) {
+      throw new OrganizationError(
+        "SUPER_USER_ROLE_NOT_CONFIGURED",
+        "Required ownership roles are not configured",
+      );
+    }
+
+    // Remove reporting assignments that become invalid when the target
+    // stops being an Admin or Manager.
+    if (target.role.code === "admin") {
+      await tx.membership.updateMany({
+        where: {
+          organizationId: parsedOrganizationId.data,
+          adminMembershipId: target.id,
+        },
+        data: { adminMembershipId: null },
+      });
+    }
+
+    if (target.role.code === "manager") {
+      await tx.membership.updateMany({
+        where: {
+          organizationId: parsedOrganizationId.data,
+          managerMembershipId: target.id,
+        },
+        data: { managerMembershipId: null },
+      });
+    }
+
+    // Clear assignments incompatible with the target's new Super User role.
+    await tx.membership.update({
+      where: { id: target.id },
+      data: {
+        adminMembershipId: null,
+        managerMembershipId: null,
+      },
+    });
+
+    // Demote first because the database has a partial unique index allowing
+    // at most one Super User per organization.
+    await tx.membership.update({
+      where: { id: actor.id },
+      data: {
+        roleId: adminRole.id,
+        adminMembershipId: null,
+        managerMembershipId: null,
+      },
+    });
+
+    await tx.membership.update({
+      where: { id: target.id },
+      data: { roleId: superUserRole.id },
+    });
+
+    await tx.auditLog.create({
+      data: {
+        organizationId: parsedOrganizationId.data,
+        actorUserId: parsedUserId.data,
+        actorMembershipId: actor.id,
+        action: "organization.ownership_transferred",
+        result: "success",
+        targetType: "organization",
+        targetId: parsedOrganizationId.data,
+        metadata: {
+          previousOwnerMembershipId: actor.id,
+          previousOwnerUserId: actor.userId,
+          newOwnerMembershipId: target.id,
+          newOwnerUserId: target.userId,
+        },
+      },
+    });
+
+    return {
+      organizationId: parsedOrganizationId.data,
+      previousOwnerMembershipId: actor.id,
+      newOwnerMembershipId: target.id,
+    };
+  });
+}

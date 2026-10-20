@@ -3,7 +3,8 @@ export type OrganizationErrorCode =
   | "EMAIL_NOT_VERIFIED"
   | "FORBIDDEN"
   | "ORGANIZATION_NOT_FOUND"
-  | "SUPER_USER_ROLE_NOT_CONFIGURED";
+  | "SUPER_USER_ROLE_NOT_CONFIGURED"
+  | "OWNERSHIP_TRANSFER_TARGET_INVALID";
 
 export class OrganizationError extends Error {
   constructor(
