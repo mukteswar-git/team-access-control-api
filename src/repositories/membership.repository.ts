@@ -1,23 +1,80 @@
 import { prisma, type DatabaseClient } from "../lib/prisma.js";
 
-export function findMembershipById(id: string) {
-  return prisma.membership.findUnique({
-    where: { id },
-    include: {
-      user: true,
-      organization: true,
-      role: true,
-      adminMembership: {
-        include: {
-          role: true,
+const membershipReadSelect = {
+  id: true,
+  organizationId: true,
+  userId: true,
+  roleId: true,
+  adminMembershipId: true,
+  managerMembershipId: true,
+  createdAt: true,
+  updatedAt: true,
+  user: {
+    select: {
+      id: true,
+      email: true,
+    },
+  },
+  organization: {
+    select: {
+      id: true,
+      name: true,
+    },
+  },
+  role: {
+    select: {
+      id: true,
+      code: true,
+      name: true,
+    },
+  },
+  adminMembership: {
+    select: {
+      id: true,
+      user: {
+        select: {
+          id: true,
+          email: true,
         },
       },
-      managerMembership: {
-        include: {
-          role: true,
+      role: {
+        select: {
+          code: true,
+          name: true,
         },
       },
     },
+  },
+  managerMembership: {
+    select: {
+      id: true,
+      user: {
+        select: {
+          id: true,
+          email: true,
+        },
+      },
+      role: {
+        select: {
+          code: true,
+          name: true,
+        },
+      },
+    },
+  },
+} as const;
+
+export function findMembershipById(
+  id: string,
+  organizationId?: string,
+  db: DatabaseClient = prisma,
+) {
+  return db.membership.findFirst({
+    where: {
+      id,
+      ...(organizationId ? { organizationId } : {}),
+    },
+    select: membershipReadSelect,
   });
 }
 
@@ -34,8 +91,6 @@ export function findMembershipByUserAndOrganization(
       },
     },
     include: {
-      user: true,
-      organization: true,
       role: {
         include: {
           rolePermissions: {
@@ -45,54 +100,40 @@ export function findMembershipByUserAndOrganization(
           },
         },
       },
-      adminMembership: {
-        include: {
-          role: true,
-        },
-      },
-      managerMembership: {
-        include: {
-          role: true,
-        },
-      },
     },
   });
 }
 
-export function findMembershipsByOrganizationId(organizationId: string) {
-  return prisma.membership.findMany({
+export function findMembershipsByOrganizationId(
+  organizationId: string,
+  db: DatabaseClient = prisma,
+) {
+  return db.membership.findMany({
     where: { organizationId },
-    include: {
-      user: true,
-      role: true,
-      adminMembership: {
-        include: {
-          role: true,
-        },
-      },
-      managerMembership: {
-        include: {
-          role: true,
-        },
-      },
-    },
+    select: membershipReadSelect,
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
   });
 }
 
-export function findMembershipsByUserId(userId: string) {
-  return prisma.membership.findMany({
+export function findMembershipsByUserId(
+  userId: string,
+  db: DatabaseClient = prisma,
+) {
+  return db.membership.findMany({
     where: { userId },
-    include: {
-      organization: true,
-      role: true,
-      adminMembership: {
-        include: {
-          role: true,
+    select: {
+      id: true,
+      organizationId: true,
+      role: {
+        select: {
+          code: true,
+          name: true,
         },
       },
-      managerMembership: {
-        include: {
-          role: true,
+      organization: {
+        select: {
+          id: true,
+          name: true,
         },
       },
     },
