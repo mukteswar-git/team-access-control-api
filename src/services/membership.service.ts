@@ -468,3 +468,127 @@ export async function updateMembershipReportingAssignment(
     };
   });
 }
+
+export async function removeMembership(
+  actorUserId: string,
+  organizationId: string,
+  targetMembershipId: string,
+  db = prisma,
+) {
+  if (
+    !actorUserId.trim() ||
+    !organizationId.trim() ||
+    !targetMembershipId.trim()
+  ) {
+    throw new MembershipError(
+      "INVALID_INPUT",
+      "User ID, organization ID, and membership ID are required.",
+    );
+  }
+
+  return db.$transaction(async (tx) => {
+    const target = await tx.membership.findFirst({
+      where: {
+        id: targetMembershipId,
+        organizationId,
+      },
+      include: { role: true },
+    });
+
+    if (!target) {
+      throw new MembershipError(
+        "MEMBERSHIP_NOT_FOUND",
+        "Membership not found.",
+      );
+    }
+
+    if (target.role.code === "super_user") {
+      throw new MembershipError(
+        "FORBIDDEN",
+        "A Super User membership cannot be removed.",
+      );
+    }
+
+    const allowed = await canPerformMembershipAction(
+      actorUserId,
+      organizationId,
+      targetMembershipId,
+      "membership.remove",
+      tx,
+    );
+
+    if (!allowed) {
+      throw new MembershipError(
+        "FORBIDDEN",
+        "You are not authorized to remove this membership.",
+      );
+    }
+
+    const actor = await tx.membership.findUnique({
+      where: {
+        userId_organizationId: {
+          userId: actorUserId,
+          organizationId,
+        },
+      },
+      select: { id: true },
+    });
+
+    // Preserve subordinate memberships and clear their reporting assignments.
+    if (target.role.code === "admin") {
+      await tx.membership.updateMany({
+        where: { organizationId, adminMembershipId: target.id },
+        data: { adminMembershipId: null },
+      });
+    }
+
+    if (target.role.code === "manager") {
+      await tx.membership.updateMany({
+        where: { organizationId, managerMembershipId: target.id },
+        data: { managerMembershipId: null },
+      });
+    }
+
+    // Remove restrictive invitation references before deleting the membership.
+    const now = new Date();
+
+    await tx.invitation.updateMany({
+      where: {
+        organizationId,
+        OR: [
+          { adminMembershipId: target.id },
+          { managerMembershipId: target.id },
+        ],
+      },
+      data: {
+        revokedAt: now,
+        adminMembershipId: null,
+        managerMembershipId: null,
+      },
+    });
+
+    await tx.membership.delete({
+      where: { id: target.id },
+    });
+
+    await tx.auditLog.create({
+      data: {
+        organizationId,
+        actorUserId,
+        actorMembershipId: actor?.id ?? null,
+        action: "membership.removed",
+        result: "success",
+        targetType: "membership",
+        targetId: target.id,
+        metadata: {
+          removedRole: target.role.code,
+        },
+      },
+    });
+
+    return {
+      membershipId: target.id,
+      removedRole: target.role.code,
+    };
+  });
+}
