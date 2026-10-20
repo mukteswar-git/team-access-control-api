@@ -4,7 +4,11 @@ import {
   testPrisma as prisma,
   disconnectTestDatabase,
 } from "../helpers/database.js";
-import { createInvitation as createInvitationService } from "../../src/services/invitation.service.js";
+import {
+  createInvitation as createInvitationService,
+  getInvitationStatus,
+  revokeInvitation as revokeInvitationService,
+} from "../../src/services/invitation.service.js";
 import { InvitationError } from "../../src/services/invitation.errors.js";
 import { INVITATION_TOKEN_TTL_MS } from "../../src/constants/auth.js";
 
@@ -13,6 +17,68 @@ const createInvitation = (
   organizationId: string,
   data: Parameters<typeof createInvitationService>[2],
 ) => createInvitationService(actorUserId, organizationId, data, prisma);
+
+const revokeInvitation = (
+  actorUserId: string,
+  organizationId: string,
+  invitationId: string,
+) => revokeInvitationService(actorUserId, organizationId, invitationId, prisma);
+
+describe("getInvitationStatus", () => {
+  const now = new Date("2026-10-20T10:00:00.000Z");
+
+  test("returns pending for an unexpired invitation", () => {
+    expect(
+      getInvitationStatus(
+        {
+          expiresAt: new Date("2026-10-21T10:00:00.000Z"),
+          acceptedAt: null,
+          revokedAt: null,
+        },
+        now,
+      ),
+    ).toBe("pending");
+  });
+
+  test("returns expired when the expiry time has passed", () => {
+    expect(
+      getInvitationStatus(
+        {
+          expiresAt: new Date("2026-10-19T10:00:00.000Z"),
+          acceptedAt: null,
+          revokedAt: null,
+        },
+        now,
+      ),
+    ).toBe("expired");
+  });
+
+  test("returns revoked when revokedAt is set", () => {
+    expect(
+      getInvitationStatus(
+        {
+          expiresAt: new Date("2026-10-21T10:00:00.000Z"),
+          acceptedAt: null,
+          revokedAt: new Date("2026-10-19T10:00:00.000Z"),
+        },
+        now,
+      ),
+    ).toBe("revoked");
+  });
+
+  test("returns accepted when acceptedAt is set", () => {
+    expect(
+      getInvitationStatus(
+        {
+          expiresAt: new Date("2026-10-19T10:00:00.000Z"),
+          acceptedAt: new Date("2026-10-18T10:00:00.000Z"),
+          revokedAt: null,
+        },
+        now,
+      ),
+    ).toBe("accepted");
+  });
+});
 
 describe("Invitation service", () => {
   afterAll(async () => {
@@ -66,6 +132,41 @@ describe("Invitation service", () => {
       },
     });
   }
+
+  const cleanupInvitationTestData = async (
+    organizationIds: string[],
+    userIds: string[],
+  ) => {
+    await prisma.invitation.deleteMany({
+      where: { organizationId: { in: organizationIds } },
+    });
+
+    await prisma.$executeRaw`
+      ALTER TABLE "audit_logs" DISABLE TRIGGER "audit_logs_append_only"
+    `;
+
+    try {
+      await prisma.auditLog.deleteMany({
+        where: { organizationId: { in: organizationIds } },
+      });
+    } finally {
+      await prisma.$executeRaw`
+        ALTER TABLE "audit_logs" ENABLE TRIGGER "audit_logs_append_only"
+      `;
+    }
+
+    await prisma.membership.deleteMany({
+      where: { organizationId: { in: organizationIds } },
+    });
+
+    await prisma.user.deleteMany({
+      where: { id: { in: userIds } },
+    });
+
+    await prisma.organization.deleteMany({
+      where: { id: { in: organizationIds } },
+    });
+  };
 
   test("allows a Manager to invite a Member assigned to themselves", async () => {
     const manager = await createTestUser();
@@ -403,6 +504,175 @@ describe("Invitation service", () => {
       expect(replacement.invitation.invitedEmail).toBe(email);
       expect(replacement.invitation.revokedAt).toBeNull();
     } finally {
+      await prisma.invitation.deleteMany({
+        where: { organizationId: organization.id },
+      });
+
+      await prisma.$executeRaw`
+        ALTER TABLE "audit_logs" DISABLE TRIGGER "audit_logs_append_only"
+      `;
+
+      try {
+        await prisma.auditLog.deleteMany({
+          where: { organizationId: organization.id },
+        });
+      } finally {
+        await prisma.$executeRaw`
+          ALTER TABLE "audit_logs" ENABLE TRIGGER "audit_logs_append_only"
+        `;
+      }
+
+      await prisma.membership.deleteMany({
+        where: { organizationId: organization.id },
+      });
+
+      await prisma.user.deleteMany({
+        where: { id: manager.id },
+      });
+
+      await prisma.organization.delete({
+        where: { id: organization.id },
+      });
+    }
+  });
+
+  test("allows only one concurrent revocation of the same invitation", async () => {
+    const manager = await createTestUser();
+    const organization = await createTestOrganization();
+
+    try {
+      const managerMembership = await createMembership(
+        manager.id,
+        organization.id,
+        "manager",
+      );
+
+      const { invitation } = await createInvitation(manager.id, organization.id, {
+        email: `concurrent-revoke-${randomUUID()}@example.com`,
+        roleCode: "member",
+        managerMembershipId: managerMembership.id,
+      });
+
+      const results = await Promise.allSettled([
+        revokeInvitation(manager.id, organization.id, invitation.id),
+        revokeInvitation(manager.id, organization.id, invitation.id),
+      ]);
+
+      const successes = results.filter((result) => result.status === "fulfilled");
+
+      const failures = results.filter((result) => result.status === "rejected");
+
+      expect(successes).toHaveLength(1);
+      expect(failures).toHaveLength(1);
+
+      if (failures[0].status === "rejected") {
+        expect(failures[0].reason).toMatchObject({
+          code: "INVALID_INVITATION_STATE",
+        });
+      }
+
+      const storedInvitation = await prisma.invitation.findUniqueOrThrow({
+        where: { id: invitation.id },
+      });
+
+      expect(storedInvitation.revokedAt).toBeInstanceOf(Date);
+
+      const auditLogs = await prisma.auditLog.findMany({
+        where: {
+          organizationId: organization.id,
+          action: "invitation.revoked",
+          targetType: "invitation",
+          targetId: invitation.id,
+          result: "success",
+        },
+      });
+
+      expect(auditLogs).toHaveLength(1);
+    } finally {
+      await prisma.invitation.deleteMany({
+        where: { organizationId: organization.id },
+      });
+
+      await prisma.$executeRaw`
+        ALTER TABLE "audit_logs" DISABLE TRIGGER "audit_logs_append_only"
+      `;
+
+      try {
+        await prisma.auditLog.deleteMany({
+          where: { organizationId: organization.id },
+        });
+      } finally {
+        await prisma.$executeRaw`
+          ALTER TABLE "audit_logs" ENABLE TRIGGER "audit_logs_append_only"
+        `;
+      }
+
+      await prisma.membership.deleteMany({
+        where: { organizationId: organization.id },
+      });
+
+      await prisma.user.deleteMany({
+        where: { id: manager.id },
+      });
+
+      await prisma.organization.delete({
+        where: { id: organization.id },
+      });
+    }
+  });
+
+  test("rolls back invitation revocation if audit logging fails", async () => {
+    const manager = await createTestUser();
+    const organization = await createTestOrganization();
+    const triggerName = `test_revocation_audit_failure_${randomUUID().replaceAll("-", "")}`;
+    const functionName = `${triggerName}_fn`;
+
+    try {
+      const managerMembership = await createMembership(
+        manager.id,
+        organization.id,
+        "manager",
+      );
+
+      const { invitation } = await createInvitation(manager.id, organization.id, {
+        email: `rollback-revoke-${randomUUID()}@example.com`,
+        roleCode: "member",
+        managerMembershipId: managerMembership.id,
+      });
+
+      await prisma.$executeRawUnsafe(`
+        CREATE FUNCTION ${functionName}() RETURNS trigger AS $$
+        BEGIN
+          IF NEW.action = 'invitation.revoked' THEN
+            RAISE EXCEPTION 'forced revocation audit failure';
+          END IF;
+          RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql
+      `);
+
+      await prisma.$executeRawUnsafe(`
+        CREATE TRIGGER ${triggerName}
+        BEFORE INSERT ON audit_logs
+        FOR EACH ROW
+        EXECUTE FUNCTION ${functionName}()
+      `);
+
+      await expect(
+        revokeInvitation(manager.id, organization.id, invitation.id),
+      ).rejects.toThrow("forced revocation audit failure");
+
+      const storedInvitation = await prisma.invitation.findUniqueOrThrow({
+        where: { id: invitation.id },
+      });
+
+      expect(storedInvitation.revokedAt).toBeNull();
+    } finally {
+      await prisma.$executeRawUnsafe(
+        `DROP TRIGGER IF EXISTS ${triggerName} ON audit_logs`,
+      );
+      await prisma.$executeRawUnsafe(`DROP FUNCTION IF EXISTS ${functionName}()`);
+
       await prisma.invitation.deleteMany({
         where: { organizationId: organization.id },
       });
@@ -1152,6 +1422,499 @@ describe("Invitation service", () => {
       await prisma.organization.delete({
         where: { id: organization.id },
       });
+    }
+  });
+
+  test("allows an authorized Manager to revoke a pending invitation", async () => {
+    const manager = await createTestUser();
+    const organization = await createTestOrganization();
+
+    try {
+      const managerMembership = await createMembership(
+        manager.id,
+        organization.id,
+        "manager",
+      );
+
+      const { invitation } = await createInvitation(manager.id, organization.id, {
+        email: `revoke-${randomUUID()}@example.com`,
+        roleCode: "member",
+        managerMembershipId: managerMembership.id,
+      });
+
+      const result = await revokeInvitation(
+        manager.id,
+        organization.id,
+        invitation.id,
+      );
+
+      expect(result.invitationId).toBe(invitation.id);
+      expect(result.status).toBe("revoked");
+      expect(result.revokedAt).toBeInstanceOf(Date);
+
+      const storedInvitation = await prisma.invitation.findUniqueOrThrow({
+        where: { id: invitation.id },
+      });
+
+      expect(storedInvitation.revokedAt).toEqual(result.revokedAt);
+
+      const auditLog = await prisma.auditLog.findFirst({
+        where: {
+          organizationId: organization.id,
+          action: "invitation.revoked",
+          targetType: "invitation",
+          targetId: invitation.id,
+        },
+      });
+
+      expect(auditLog).not.toBeNull();
+      expect(auditLog?.actorUserId).toBe(manager.id);
+      expect(auditLog?.actorMembershipId).toBe(managerMembership.id);
+      expect(auditLog?.result).toBe("success");
+    } finally {
+      await prisma.invitation.deleteMany({
+        where: { organizationId: organization.id },
+      });
+
+      await prisma.$executeRaw`
+        ALTER TABLE "audit_logs" DISABLE TRIGGER "audit_logs_append_only"
+      `;
+
+      try {
+        await prisma.auditLog.deleteMany({
+          where: { organizationId: organization.id },
+        });
+      } finally {
+        await prisma.$executeRaw`
+          ALTER TABLE "audit_logs" ENABLE TRIGGER "audit_logs_append_only"
+        `;
+      }
+
+      await prisma.membership.deleteMany({
+        where: { organizationId: organization.id },
+      });
+
+      await prisma.user.deleteMany({
+        where: { id: manager.id },
+      });
+
+      await prisma.organization.delete({
+        where: { id: organization.id },
+      });
+    }
+  });
+
+  test("rejects revoking an invitation that has already been revoked", async () => {
+    const manager = await createTestUser();
+    const organization = await createTestOrganization();
+
+    try {
+      const managerMembership = await createMembership(
+        manager.id,
+        organization.id,
+        "manager",
+      );
+
+      const { invitation } = await createInvitation(manager.id, organization.id, {
+        email: `already-revoked-${randomUUID()}@example.com`,
+        roleCode: "member",
+        managerMembershipId: managerMembership.id,
+      });
+
+      // Revoke the invitation directly to establish its initial state.
+      const revokedAt = new Date();
+
+      await prisma.invitation.update({
+        where: { id: invitation.id },
+        data: { revokedAt },
+      });
+
+      await expect(
+        revokeInvitation(manager.id, organization.id, invitation.id),
+      ).rejects.toMatchObject({
+        code: "INVALID_INVITATION_STATE",
+      });
+
+      const storedInvitation = await prisma.invitation.findUniqueOrThrow({
+        where: { id: invitation.id },
+      });
+
+      expect(storedInvitation.revokedAt).toEqual(revokedAt);
+
+      const auditLogs = await prisma.auditLog.findMany({
+        where: {
+          organizationId: organization.id,
+          action: "invitation.revoked",
+          targetType: "invitation",
+          targetId: invitation.id,
+        },
+      });
+
+      // The failed attempt must not create a success audit log.
+      expect(auditLogs).toHaveLength(0);
+    } finally {
+      await prisma.invitation.deleteMany({
+        where: { organizationId: organization.id },
+      });
+
+      await prisma.$executeRaw`
+        ALTER TABLE "audit_logs" DISABLE TRIGGER "audit_logs_append_only"
+      `;
+
+      try {
+        await prisma.auditLog.deleteMany({
+          where: { organizationId: organization.id },
+        });
+      } finally {
+        await prisma.$executeRaw`
+          ALTER TABLE "audit_logs" ENABLE TRIGGER "audit_logs_append_only"
+        `;
+      }
+
+      await prisma.membership.deleteMany({
+        where: { organizationId: organization.id },
+      });
+
+      await prisma.user.deleteMany({
+        where: { id: manager.id },
+      });
+
+      await prisma.organization.delete({
+        where: { id: organization.id },
+      });
+    }
+  });
+
+  test("rejects revoking an invitation that has already been accepted", async () => {
+    const manager = await createTestUser();
+    const organization = await createTestOrganization();
+
+    try {
+      const managerMembership = await createMembership(
+        manager.id,
+        organization.id,
+        "manager",
+      );
+
+      const { invitation } = await createInvitation(
+        manager.id,
+        organization.id,
+        {
+          email: `accepted-${randomUUID()}@example.com`,
+          roleCode: "member",
+          managerMembershipId: managerMembership.id,
+        },
+      );
+
+      const acceptedAt = new Date();
+
+      await prisma.invitation.update({
+        where: { id: invitation.id },
+        data: { acceptedAt },
+      });
+
+      await expect(
+        revokeInvitation(manager.id, organization.id, invitation.id),
+      ).rejects.toMatchObject({
+        code: "INVALID_INVITATION_STATE",
+      });
+
+      const storedInvitation = await prisma.invitation.findUniqueOrThrow({
+        where: { id: invitation.id },
+      });
+
+      expect(storedInvitation.acceptedAt).toEqual(acceptedAt);
+      expect(storedInvitation.revokedAt).toBeNull();
+
+      const auditLogs = await prisma.auditLog.findMany({
+        where: {
+          organizationId: organization.id,
+          action: "invitation.revoked",
+          targetType: "invitation",
+          targetId: invitation.id,
+        },
+      });
+
+      expect(auditLogs).toHaveLength(0);
+    } finally {
+      await prisma.invitation.deleteMany({
+        where: { organizationId: organization.id },
+      });
+
+      await prisma.$executeRaw`
+        ALTER TABLE "audit_logs" DISABLE TRIGGER "audit_logs_append_only"
+      `;
+
+      try {
+        await prisma.auditLog.deleteMany({
+          where: { organizationId: organization.id },
+        });
+      } finally {
+        await prisma.$executeRaw`
+          ALTER TABLE "audit_logs" ENABLE TRIGGER "audit_logs_append_only"
+        `;
+      }
+
+      await prisma.membership.deleteMany({
+        where: { organizationId: organization.id },
+      });
+
+      await prisma.user.deleteMany({
+        where: { id: manager.id },
+      });
+
+      await prisma.organization.delete({
+        where: { id: organization.id },
+      });
+    }
+  });
+
+  test("rejects revoking an expired invitation", async () => {
+    const manager = await createTestUser();
+    const organization = await createTestOrganization();
+
+    try {
+      const managerMembership = await createMembership(
+        manager.id,
+        organization.id,
+        "manager",
+      );
+
+      const { invitation } = await createInvitation(manager.id, organization.id, {
+        email: `expired-${randomUUID()}@example.com`,
+        roleCode: "member",
+        managerMembershipId: managerMembership.id,
+      });
+
+      const expiredAt = new Date(Date.now() - 60_000);
+
+      await prisma.invitation.update({
+        where: { id: invitation.id },
+        data: { expiresAt: expiredAt },
+      });
+
+      await expect(
+        revokeInvitation(manager.id, organization.id, invitation.id),
+      ).rejects.toMatchObject({
+        code: "INVALID_INVITATION_STATE",
+      });
+
+      const storedInvitation = await prisma.invitation.findUniqueOrThrow({
+        where: { id: invitation.id },
+      });
+
+      expect(storedInvitation.expiresAt).toEqual(expiredAt);
+      expect(storedInvitation.revokedAt).toBeNull();
+
+      const auditLogs = await prisma.auditLog.findMany({
+        where: {
+          organizationId: organization.id,
+          action: "invitation.revoked",
+          targetType: "invitation",
+          targetId: invitation.id,
+        },
+      });
+
+      expect(auditLogs).toHaveLength(0);
+    } finally {
+      await prisma.invitation.deleteMany({
+        where: { organizationId: organization.id },
+      });
+
+      await prisma.$executeRaw`
+        ALTER TABLE "audit_logs" DISABLE TRIGGER "audit_logs_append_only"
+      `;
+
+      try {
+        await prisma.auditLog.deleteMany({
+          where: { organizationId: organization.id },
+        });
+      } finally {
+        await prisma.$executeRaw`
+          ALTER TABLE "audit_logs" ENABLE TRIGGER "audit_logs_append_only"
+        `;
+      }
+
+      await prisma.membership.deleteMany({
+        where: { organizationId: organization.id },
+      });
+
+      await prisma.user.deleteMany({
+        where: { id: manager.id },
+      });
+
+      await prisma.organization.delete({
+        where: { id: organization.id },
+      });
+    }
+  });
+
+  test("rejects a Member attempting to revoke an invitation", async () => {
+    const manager = await createTestUser();
+    const member = await createTestUser();
+    const organization = await createTestOrganization();
+
+    try {
+      const managerMembership = await createMembership(
+        manager.id,
+        organization.id,
+        "manager",
+      );
+
+      await createMembership(member.id, organization.id, "member");
+
+      const { invitation } = await createInvitation(manager.id, organization.id, {
+        email: `member-revoke-${randomUUID()}@example.com`,
+        roleCode: "member",
+        managerMembershipId: managerMembership.id,
+      });
+
+      await expect(
+        revokeInvitation(member.id, organization.id, invitation.id),
+      ).rejects.toThrow();
+
+      const storedInvitation = await prisma.invitation.findUniqueOrThrow({
+        where: { id: invitation.id },
+      });
+
+      expect(storedInvitation.revokedAt).toBeNull();
+    } finally {
+      await cleanupInvitationTestData([organization.id], [manager.id, member.id]);
+    }
+  });
+
+  test("rejects an Admin revoking an invitation outside their scope", async () => {
+    const adminA = await createTestUser();
+    const adminB = await createTestUser();
+    const manager = await createTestUser();
+    const organization = await createTestOrganization();
+
+    try {
+      const adminAMembership = await createMembership(
+        adminA.id,
+        organization.id,
+        "admin",
+      );
+
+      const adminBMembership = await createMembership(
+        adminB.id,
+        organization.id,
+        "admin",
+      );
+
+      const managerMembership = await createMembership(
+        manager.id,
+        organization.id,
+        "manager",
+        { adminMembershipId: adminBMembership.id },
+      );
+
+      const { invitation } = await createInvitation(manager.id, organization.id, {
+        email: `out-of-scope-${randomUUID()}@example.com`,
+        roleCode: "member",
+        managerMembershipId: managerMembership.id,
+      });
+
+      await expect(
+        revokeInvitation(adminA.id, organization.id, invitation.id),
+      ).rejects.toThrow();
+
+      const storedInvitation = await prisma.invitation.findUniqueOrThrow({
+        where: { id: invitation.id },
+      });
+
+      expect(storedInvitation.revokedAt).toBeNull();
+
+      // Keep the variable meaningful: Admin A must not own Admin B's scope.
+      expect(adminAMembership.id).not.toBe(adminBMembership.id);
+    } finally {
+      await cleanupInvitationTestData(
+        [organization.id],
+        [adminA.id, adminB.id, manager.id],
+      );
+    }
+  });
+
+  test("rejects a Manager revoking an invitation created by another Manager", async () => {
+    const managerA = await createTestUser();
+    const managerB = await createTestUser();
+    const organization = await createTestOrganization();
+
+    try {
+      const managerAMembership = await createMembership(
+        managerA.id,
+        organization.id,
+        "manager",
+      );
+
+      await createMembership(managerB.id, organization.id, "manager");
+
+      const { invitation } = await createInvitation(
+        managerA.id,
+        organization.id,
+        {
+          email: `other-manager-${randomUUID()}@example.com`,
+          roleCode: "member",
+          managerMembershipId: managerAMembership.id,
+        },
+      );
+
+      await expect(
+        revokeInvitation(managerB.id, organization.id, invitation.id),
+      ).rejects.toThrow();
+
+      const storedInvitation = await prisma.invitation.findUniqueOrThrow({
+        where: { id: invitation.id },
+      });
+
+      expect(storedInvitation.revokedAt).toBeNull();
+    } finally {
+      await cleanupInvitationTestData(
+        [organization.id],
+        [managerA.id, managerB.id],
+      );
+    }
+  });
+
+  test("treats an invitation from another organization as not found", async () => {
+    const managerA = await createTestUser();
+    const managerB = await createTestUser();
+    const organizationA = await createTestOrganization();
+    const organizationB = await createTestOrganization();
+
+    try {
+      await createMembership(managerA.id, organizationA.id, "manager");
+
+      const managerBMembership = await createMembership(
+        managerB.id,
+        organizationB.id,
+        "manager",
+      );
+
+      const { invitation } = await createInvitation(
+        managerB.id,
+        organizationB.id,
+        {
+          email: `cross-org-${randomUUID()}@example.com`,
+          roleCode: "member",
+          managerMembershipId: managerBMembership.id,
+        },
+      );
+
+      await expect(
+        revokeInvitation(managerA.id, organizationA.id, invitation.id),
+      ).rejects.toThrow("Invitation not found");
+
+      const storedInvitation = await prisma.invitation.findUniqueOrThrow({
+        where: { id: invitation.id },
+      });
+
+      expect(storedInvitation.revokedAt).toBeNull();
+    } finally {
+      await cleanupInvitationTestData(
+        [organizationA.id, organizationB.id],
+        [managerA.id, managerB.id],
+      );
     }
   });
 });
