@@ -2,6 +2,7 @@ import {
   hasOrganizationMembership,
   hasPermission,
   canChangeMembershipRole,
+  canPerformMembershipAction,
 } from "./authorization.service.js";
 import {
   findMembershipById,
@@ -141,7 +142,6 @@ export async function changeMembershipRole(
   db = prisma,
 ) {
   return db.$transaction(async (tx) => {
-    // Load the target membership inside the transaction.
     const target = await tx.membership.findFirst({
       where: {
         id: targetMembershipId,
@@ -156,7 +156,6 @@ export async function changeMembershipRole(
       throw new Error("Membership not found.");
     }
 
-    // Resolve the requested role.
     const newRole = await tx.role.findUnique({
       where: {
         code: newRoleCode,
@@ -167,7 +166,6 @@ export async function changeMembershipRole(
       throw new Error("Invalid role.");
     }
 
-    // Check authorization using the same transaction client.
     const allowed = await canChangeMembershipRole(
       actorUserId,
       organizationId,
@@ -182,8 +180,8 @@ export async function changeMembershipRole(
 
     const previousRoleCode = target.role.code;
 
-    // When an Admin changes role, their assigned Managers become unassigned.
-    // Those Managers retain their own Member assignments.
+    // Managers assigned to a demoted Admin become unassigned. Their Members
+    // remain assigned to their respective Managers.
     if (previousRoleCode === "admin" && newRoleCode !== "admin") {
       await tx.membership.updateMany({
         where: {
@@ -196,8 +194,7 @@ export async function changeMembershipRole(
       });
     }
 
-    // When a Manager changes role, their directly assigned Members
-    // become unassigned.
+    // Members assigned to a demoted Manager become unassigned.
     if (previousRoleCode === "manager" && newRoleCode !== "manager") {
       await tx.membership.updateMany({
         where: {
@@ -210,12 +207,10 @@ export async function changeMembershipRole(
       });
     }
 
-    // Clear reporting assignments incompatible with the new role.
+    // Clear assignments incompatible with the new role.
     if (newRoleCode === "admin") {
       await tx.membership.update({
-        where: {
-          id: target.id,
-        },
+        where: { id: target.id },
         data: {
           adminMembershipId: null,
           managerMembershipId: null,
@@ -223,29 +218,22 @@ export async function changeMembershipRole(
       });
     } else if (newRoleCode === "manager") {
       await tx.membership.update({
-        where: {
-          id: target.id,
-        },
+        where: { id: target.id },
         data: {
           managerMembershipId: null,
         },
       });
     } else if (newRoleCode === "member") {
       await tx.membership.update({
-        where: {
-          id: target.id,
-        },
+        where: { id: target.id },
         data: {
           adminMembershipId: null,
         },
       });
     }
 
-    // Apply the new role.
     const updatedMembership = await tx.membership.update({
-      where: {
-        id: target.id,
-      },
+      where: { id: target.id },
       data: {
         roleId: newRole.id,
       },
@@ -254,25 +242,21 @@ export async function changeMembershipRole(
       },
     });
 
-    // Record the role change in the same transaction.
+    const actorMembership = await tx.membership.findUnique({
+      where: {
+        userId_organizationId: {
+          userId: actorUserId,
+          organizationId,
+        },
+      },
+      select: { id: true },
+    });
+
     await tx.auditLog.create({
       data: {
         organizationId,
         actorUserId,
-        actorMembershipId:
-          (
-            await tx.membership.findUnique({
-              where: {
-                userId_organizationId: {
-                  userId: actorUserId,
-                  organizationId,
-                },
-              },
-              select: {
-                id: true,
-              },
-            })
-          )?.id ?? null,
+        actorMembershipId: actorMembership?.id ?? null,
         action: "membership.role_changed",
         result: "success",
         targetType: "membership",
@@ -288,6 +272,199 @@ export async function changeMembershipRole(
       membershipId: updatedMembership.id,
       previousRole: previousRoleCode,
       newRole: updatedMembership.role.code,
+    };
+  });
+}
+
+type ReportingAssignment =
+  | {
+      role: "manager";
+      adminMembershipId: string | null;
+    }
+  | {
+      role: "member";
+      managerMembershipId: string | null;
+    };
+
+export async function updateMembershipReportingAssignment(
+  actorUserId: string,
+  organizationId: string,
+  targetMembershipId: string,
+  assignment: ReportingAssignment,
+  db: DatabaseClient = prisma,
+) {
+  return db.$transaction(async (tx) => {
+    if (
+      !actorUserId.trim() ||
+      !organizationId.trim() ||
+      !targetMembershipId.trim()
+    ) {
+      throw new MembershipError(
+        "INVALID_INPUT",
+        "User ID, organization ID, and membership ID are required.",
+      );
+    }
+
+    const target = await tx.membership.findFirst({
+      where: {
+        id: targetMembershipId,
+        organizationId,
+      },
+      include: { role: true },
+    });
+
+    if (!target) {
+      throw new MembershipError(
+        "MEMBERSHIP_NOT_FOUND",
+        "Membership not found.",
+      );
+    }
+
+    const actor = await tx.membership.findUnique({
+      where: {
+        userId_organizationId: {
+          userId: actorUserId,
+          organizationId,
+        },
+      },
+      include: { role: true },
+    });
+
+    if (!actor) {
+      throw new MembershipError(
+        "FORBIDDEN",
+        "Not authorized to update this reporting assignment.",
+      );
+    }
+
+    const allowed = await canPerformMembershipAction(
+      actorUserId,
+      organizationId,
+      targetMembershipId,
+      "membership.update",
+      tx,
+    );
+
+    if (!allowed) {
+      throw new MembershipError(
+        "FORBIDDEN",
+        "Not authorized to update this reporting assignment.",
+      );
+    }
+
+    const isManagerAssignment = assignment.role === "manager";
+    const expectedTargetRole = assignment.role;
+    const referenceId: string | null = isManagerAssignment
+      ? assignment.adminMembershipId
+      : assignment.managerMembershipId;
+
+    if (target.role.code !== expectedTargetRole) {
+      throw new MembershipError(
+        "INVALID_INPUT",
+        `Reporting assignment is invalid for role "${target.role.code}".`,
+      );
+    }
+
+    if (referenceId !== null) {
+      const expectedReferenceRole = isManagerAssignment ? "admin" : "manager";
+
+      const reference = await tx.membership.findFirst({
+        where: {
+          id: referenceId,
+          organizationId,
+          role: { code: expectedReferenceRole },
+        },
+        select: { id: true },
+      });
+
+      if (!reference) {
+        throw new MembershipError(
+          "INVALID_INPUT",
+          `Reporting assignment must reference a ${expectedReferenceRole} in the same organization.`,
+        );
+      }
+    }
+
+    // The authorization helper validates the target's current scope.
+    // Validate the destination separately so an actor cannot move a target
+    // into a scope they are not allowed to administer.
+    if (referenceId !== null && actor.role.code === "admin") {
+      if (!isManagerAssignment) {
+        // Members may be assigned only to Managers within this Admin's scope.
+        const destinationManager = await tx.membership.findFirst({
+          where: {
+            id: referenceId,
+            organizationId,
+            role: { code: "manager" },
+            adminMembershipId: actor.id,
+          },
+          select: { id: true },
+        });
+
+        if (!destinationManager) {
+          throw new MembershipError(
+            "FORBIDDEN",
+            "Admins can assign Members only to Managers within their scope.",
+          );
+        }
+      }
+    }
+
+    if (
+      referenceId !== null &&
+      actor.role.code === "manager" &&
+      (isManagerAssignment || referenceId !== actor.id)
+    ) {
+      throw new MembershipError(
+        "FORBIDDEN",
+        "Managers can assign Members only to themselves or leave them unassigned.",
+      );
+    }
+
+    const previousAssignment = isManagerAssignment
+      ? { adminMembershipId: target.adminMembershipId }
+      : { managerMembershipId: target.managerMembershipId };
+
+    const updatedMembership = await tx.membership.update({
+      where: { id: target.id },
+      data: isManagerAssignment
+        ? {
+            adminMembershipId: assignment.adminMembershipId,
+            managerMembershipId: null,
+          }
+        : {
+            adminMembershipId: null,
+            managerMembershipId: assignment.managerMembershipId,
+          },
+      include: { role: true },
+    });
+
+    await tx.auditLog.create({
+      data: {
+        organizationId,
+        actorUserId,
+        actorMembershipId: actor.id,
+        action: "membership.reporting_assignment_changed",
+        result: "success",
+        targetType: "membership",
+        targetId: target.id,
+        metadata: {
+          role: target.role.code,
+          ...previousAssignment,
+          ...(isManagerAssignment
+            ? { newAdminMembershipId: updatedMembership.adminMembershipId }
+            : {
+                newManagerMembershipId: updatedMembership.managerMembershipId,
+              }),
+        },
+      },
+    });
+
+    return {
+      membershipId: updatedMembership.id,
+      role: updatedMembership.role.code,
+      adminMembershipId: updatedMembership.adminMembershipId,
+      managerMembershipId: updatedMembership.managerMembershipId,
     };
   });
 }

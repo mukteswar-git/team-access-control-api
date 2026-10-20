@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, describe, expect, test } from "@jest/globals";
+import { afterAll, describe, expect, it, test } from "@jest/globals";
 import {
   testPrisma as prisma,
   disconnectTestDatabase,
@@ -9,8 +9,8 @@ import {
   getMembershipDetails,
   listOrganizationMemberships,
   getOrganizationStructure,
+  updateMembershipReportingAssignment,
 } from "../../src/services/membership.service.js";
-import { MembershipError } from "../../src/services/membership.errors.js";
 
 describe("Membership service", () => {
   afterAll(async () => {
@@ -627,5 +627,248 @@ describe("Membership service", () => {
     ).toContain(unassignedMemberMembership.id);
 
     expect(result.superUsers).toHaveLength(0);
+  });
+
+  test("allows a Super User to assign a Manager to an Admin and audits the change", async () => {
+    const superUser = await createTestUser();
+    const admin = await createTestUser();
+    const manager = await createTestUser();
+    const organization = await createTestOrganization();
+
+    const superUserMembership = await createMembership(
+      superUser.id,
+      organization.id,
+      "super_user",
+    );
+
+    const adminMembership = await createMembership(
+      admin.id,
+      organization.id,
+      "admin",
+    );
+
+    const managerMembership = await createMembership(
+      manager.id,
+      organization.id,
+      "manager",
+    );
+
+    const result = await updateMembershipReportingAssignment(
+      superUser.id,
+      organization.id,
+      managerMembership.id,
+      {
+        role: "manager",
+        adminMembershipId: adminMembership.id,
+      },
+      prisma,
+    );
+
+    expect(result.adminMembershipId).toBe(adminMembership.id);
+    expect(result.managerMembershipId).toBeNull();
+
+    const audit = await prisma.auditLog.findMany({
+      where: {
+        organizationId: organization.id,
+        action: "membership.reporting_assignment_changed",
+        targetId: managerMembership.id,
+      },
+    });
+
+    expect(audit).toHaveLength(1);
+    expect(audit[0].actorMembershipId).toBe(superUserMembership.id);
+    expect(audit[0].result).toBe("success");
+  });
+
+  test("rejects assigning a Manager to an Admin in another organization", async () => {
+    const superUser = await createTestUser();
+    const manager = await createTestUser();
+    const admin = await createTestUser();
+    const organization = await createTestOrganization();
+    const otherOrganization = await createTestOrganization();
+
+    await createMembership(superUser.id, organization.id, "super_user");
+
+    const managerMembership = await createMembership(
+      manager.id,
+      organization.id,
+      "manager",
+    );
+
+    const otherAdminMembership = await createMembership(
+      admin.id,
+      otherOrganization.id,
+      "admin",
+    );
+
+    await expect(
+      updateMembershipReportingAssignment(
+        superUser.id,
+        organization.id,
+        managerMembership.id,
+        {
+          role: "manager",
+          adminMembershipId: otherAdminMembership.id,
+        },
+        prisma,
+      ),
+    ).rejects.toThrow(
+      "Reporting assignment must reference a admin in the same organization.",
+    );
+
+    const unchanged = await prisma.membership.findUniqueOrThrow({
+      where: { id: managerMembership.id },
+    });
+
+    expect(unchanged.adminMembershipId).toBeNull();
+
+    const audit = await prisma.auditLog.findMany({
+      where: {
+        organizationId: organization.id,
+        action: "membership.reporting_assignment_changed",
+        targetId: managerMembership.id,
+      },
+    });
+
+    expect(audit).toHaveLength(0);
+  });
+
+  test("rejects assigning a Member to a membership that is not a Manager", async () => {
+    const superUser = await createTestUser();
+    const admin = await createTestUser();
+    const member = await createTestUser();
+    const organization = await createTestOrganization();
+
+    await createMembership(superUser.id, organization.id, "super_user");
+
+    const adminMembership = await createMembership(
+      admin.id,
+      organization.id,
+      "admin",
+    );
+
+    const memberMembership = await createMembership(
+      member.id,
+      organization.id,
+      "member",
+    );
+
+    await expect(
+      updateMembershipReportingAssignment(
+        superUser.id,
+        organization.id,
+        memberMembership.id,
+        {
+          role: "member",
+          managerMembershipId: adminMembership.id,
+        },
+        prisma,
+      ),
+    ).rejects.toThrow(
+      "Reporting assignment must reference a manager in the same organization.",
+    );
+
+    const unchanged = await prisma.membership.findUniqueOrThrow({
+      where: { id: memberMembership.id },
+    });
+
+    expect(unchanged.managerMembershipId).toBeNull();
+  });
+
+  test("rejects a Manager attempting to reassign another Manager's Member", async () => {
+    const managerA = await createTestUser();
+    const managerB = await createTestUser();
+    const member = await createTestUser();
+    const organization = await createTestOrganization();
+
+    const managerAMembership = await createMembership(
+      managerA.id,
+      organization.id,
+      "manager",
+    );
+
+    const managerBMembership = await createMembership(
+      managerB.id,
+      organization.id,
+      "manager",
+    );
+
+    const memberMembership = await createMembership(
+      member.id,
+      organization.id,
+      "member",
+      { managerMembershipId: managerBMembership.id },
+    );
+
+    await expect(
+      updateMembershipReportingAssignment(
+        managerA.id,
+        organization.id,
+        memberMembership.id,
+        {
+          role: "member",
+          managerMembershipId: managerAMembership.id,
+        },
+        prisma,
+      ),
+    ).rejects.toThrow("Not authorized to update this reporting assignment.");
+
+    const unchanged = await prisma.membership.findUniqueOrThrow({
+      where: { id: memberMembership.id },
+    });
+
+    expect(unchanged.managerMembershipId).toBe(managerBMembership.id);
+  });
+
+  it("allows an Admin to move an assigned Manager to another Admin and audits the change", async () => {
+    const organization = await createTestOrganization();
+
+    const adminAUser = await createTestUser();
+    const adminBUser = await createTestUser();
+    const managerUser = await createTestUser();
+
+    const adminA = await createMembership(
+      adminAUser.id,
+      organization.id,
+      "admin",
+    );
+
+    const adminB = await createMembership(
+      adminBUser.id,
+      organization.id,
+      "admin",
+    );
+
+    const manager = await createMembership(
+      managerUser.id,
+      organization.id,
+      "manager",
+      { adminMembershipId: adminA.id },
+    );
+
+    await updateMembershipReportingAssignment(
+      adminAUser.id,
+      organization.id,
+      manager.id,
+      {
+        role: "manager",
+        adminMembershipId: adminB.id,
+      },
+    );
+
+    const updatedManager = await prisma.membership.findUniqueOrThrow({
+      where: { id: manager.id },
+    });
+
+    expect(updatedManager.adminMembershipId).toBe(adminB.id);
+
+    const auditLog = await prisma.auditLog.findFirst({
+      where: {
+        action: "membership.reporting_assignment_changed",
+        targetId: manager.id,
+      },
+    });
+
+    expect(auditLog).not.toBeNull();
   });
 });
