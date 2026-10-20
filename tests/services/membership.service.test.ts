@@ -4,7 +4,13 @@ import {
   testPrisma as prisma,
   disconnectTestDatabase,
 } from "../helpers/database.js";
-import { changeMembershipRole } from "../../src/services/membership.service.js";
+import {
+  changeMembershipRole,
+  getMembershipDetails,
+  listOrganizationMemberships,
+  getOrganizationStructure,
+} from "../../src/services/membership.service.js";
+import { MembershipError } from "../../src/services/membership.errors.js";
 
 describe("Membership service", () => {
   afterAll(async () => {
@@ -423,5 +429,203 @@ describe("Membership service", () => {
         prisma,
       ),
     ).rejects.toThrow("Membership not found.");
+  });
+
+  test("allows a Member to read membership details in their organization", async () => {
+    const actor = await createTestUser();
+    const target = await createTestUser();
+    const organization = await createTestOrganization();
+
+    await createMembership(actor.id, organization.id, "member");
+    const targetMembership = await createMembership(
+      target.id,
+      organization.id,
+      "manager",
+    );
+
+    const result = await getMembershipDetails(
+      actor.id,
+      organization.id,
+      targetMembership.id,
+      prisma,
+    );
+
+    expect(result.id).toBe(targetMembership.id);
+    expect(result.organizationId).toBe(organization.id);
+    expect(result.user.email).toBe(target.email);
+    expect(result.role.code).toBe("manager");
+  });
+
+  test("denies membership reads when the actor has no membership in the organization", async () => {
+    const actor = await createTestUser();
+    const organization = await createTestOrganization();
+
+    await expect(
+      listOrganizationMemberships(actor.id, organization.id, prisma),
+    ).rejects.toMatchObject({
+      code: "FORBIDDEN",
+    });
+  });
+
+  test("does not reveal a membership from another organization", async () => {
+    const actor = await createTestUser();
+    const target = await createTestUser();
+    const organizationA = await createTestOrganization();
+    const organizationB = await createTestOrganization();
+
+    await createMembership(actor.id, organizationA.id, "member");
+    const targetMembership = await createMembership(
+      target.id,
+      organizationB.id,
+      "member",
+    );
+
+    await expect(
+      getMembershipDetails(
+        actor.id,
+        organizationA.id,
+        targetMembership.id,
+        prisma,
+      ),
+    ).rejects.toMatchObject({
+      code: "MEMBERSHIP_NOT_FOUND",
+    });
+  });
+
+  test("lists only memberships belonging to the requested organization", async () => {
+    const actor = await createTestUser();
+    const targetA = await createTestUser();
+    const targetB = await createTestUser();
+    const organizationA = await createTestOrganization();
+    const organizationB = await createTestOrganization();
+
+    await createMembership(actor.id, organizationA.id, "member");
+    const membershipA = await createMembership(
+      targetA.id,
+      organizationA.id,
+      "admin",
+    );
+    await createMembership(targetB.id, organizationB.id, "member");
+
+    const result = await listOrganizationMemberships(
+      actor.id,
+      organizationA.id,
+      prisma,
+    );
+
+    expect(result.map((membership) => membership.id)).toEqual(
+      expect.arrayContaining([membershipA.id]),
+    );
+    expect(
+      result.every(
+        (membership) => membership.organizationId === organizationA.id,
+      ),
+    ).toBe(true);
+  });
+
+  test("returns organization structure with reporting relationships and member counts", async () => {
+    const actor = await createTestUser();
+    const admin = await createTestUser();
+    const manager = await createTestUser();
+    const unassignedManager = await createTestUser();
+    const assignedMemberA = await createTestUser();
+    const assignedMemberB = await createTestUser();
+    const unassignedMember = await createTestUser();
+    const organization = await createTestOrganization();
+
+    await createMembership(actor.id, organization.id, "member");
+
+    const adminMembership = await createMembership(
+      admin.id,
+      organization.id,
+      "admin",
+    );
+
+    const managerMembership = await createMembership(
+      manager.id,
+      organization.id,
+      "manager",
+      { adminMembershipId: adminMembership.id },
+    );
+
+    await createMembership(unassignedManager.id, organization.id, "manager");
+
+    const memberMembershipA = await createMembership(
+      assignedMemberA.id,
+      organization.id,
+      "member",
+      { managerMembershipId: managerMembership.id },
+    );
+
+    const memberMembershipB = await createMembership(
+      assignedMemberB.id,
+      organization.id,
+      "member",
+      { managerMembershipId: managerMembership.id },
+    );
+
+    const unassignedMemberMembership = await createMembership(
+      unassignedMember.id,
+      organization.id,
+      "member",
+    );
+
+    const result = await getOrganizationStructure(
+      actor.id,
+      organization.id,
+      prisma,
+    );
+
+    expect(result.counts).toEqual({
+      total: 7,
+      superUsers: 0,
+      admins: 1,
+      managers: 2,
+      members: 4,
+    });
+
+    expect(result.admins.map((membership) => membership.id)).toContain(
+      adminMembership.id,
+    );
+
+    const managerResult = result.managers.find(
+      (membership) => membership.id === managerMembership.id,
+    );
+
+    expect(managerResult).toMatchObject({
+      adminMembershipId: adminMembership.id,
+      memberCount: 2,
+    });
+
+    const unassignedManagerMembership = result.managers.find(
+      (membership) => membership.adminMembershipId === null,
+    );
+
+    expect(unassignedManagerMembership).toMatchObject({
+      id: expect.any(String),
+      memberCount: 0,
+    });
+
+    expect(result.members.map((membership) => membership.id)).toEqual(
+      expect.arrayContaining([
+        memberMembershipA.id,
+        memberMembershipB.id,
+        unassignedMemberMembership.id,
+      ]),
+    );
+
+    expect(
+      result.members.filter(
+        (membership) => membership.managerMembershipId === managerMembership.id,
+      ),
+    ).toHaveLength(2);
+
+    expect(
+      result.members
+        .filter((membership) => membership.managerMembershipId === null)
+        .map((membership) => membership.id),
+    ).toContain(unassignedMemberMembership.id);
+
+    expect(result.superUsers).toHaveLength(0);
   });
 });
