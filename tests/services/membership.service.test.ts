@@ -9,6 +9,7 @@ import {
   getMembershipDetails,
   listOrganizationMemberships,
   getOrganizationStructure,
+  removeMembership,
   updateMembershipReportingAssignment,
 } from "../../src/services/membership.service.js";
 
@@ -870,5 +871,250 @@ describe("Membership service", () => {
     });
 
     expect(auditLog).not.toBeNull();
+  });
+
+  test("allows a Super User to remove a Member and records an audit log", async () => {
+    const superUser = await createTestUser();
+    const member = await createTestUser();
+    const organization = await createTestOrganization();
+
+    const superUserMembership = await createMembership(
+      superUser.id,
+      organization.id,
+      "super_user",
+    );
+    const memberMembership = await createMembership(
+      member.id,
+      organization.id,
+      "member",
+    );
+
+    const result = await removeMembership(
+      superUser.id,
+      organization.id,
+      memberMembership.id,
+      prisma,
+    );
+
+    expect(result).toEqual({
+      membershipId: memberMembership.id,
+      removedRole: "member",
+    });
+
+    expect(
+      await prisma.membership.findUnique({
+        where: { id: memberMembership.id },
+      }),
+    ).toBeNull();
+
+    const audit = await prisma.auditLog.findFirst({
+      where: {
+        organizationId: organization.id,
+        action: "membership.removed",
+        targetId: memberMembership.id,
+      },
+    });
+
+    expect(audit).not.toBeNull();
+    expect(audit?.actorUserId).toBe(superUser.id);
+    expect(audit?.actorMembershipId).toBe(superUserMembership.id);
+    expect(audit?.result).toBe("success");
+    expect(audit?.metadata).toEqual({ removedRole: "member" });
+  });
+
+  test("rejects removal of a Super User membership", async () => {
+    const superUser = await createTestUser();
+    const organization = await createTestOrganization();
+
+    const superUserMembership = await createMembership(
+      superUser.id,
+      organization.id,
+      "super_user",
+    );
+
+    await expect(
+      removeMembership(
+        superUser.id,
+        organization.id,
+        superUserMembership.id,
+        prisma,
+      ),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    expect(
+      await prisma.membership.findUnique({
+        where: { id: superUserMembership.id },
+      }),
+    ).not.toBeNull();
+  });
+
+  test("rejects removal by a Manager who does not manage the target Member", async () => {
+    const manager = await createTestUser();
+    const member = await createTestUser();
+    const organization = await createTestOrganization();
+
+    await createMembership(manager.id, organization.id, "manager");
+    const memberMembership = await createMembership(
+      member.id,
+      organization.id,
+      "member",
+    );
+
+    await expect(
+      removeMembership(
+        manager.id,
+        organization.id,
+        memberMembership.id,
+        prisma,
+      ),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    expect(
+      await prisma.membership.findUnique({
+        where: { id: memberMembership.id },
+      }),
+    ).not.toBeNull();
+  });
+
+  test("treats a membership in another organization as not found", async () => {
+    const superUser = await createTestUser();
+    const member = await createTestUser();
+    const organization = await createTestOrganization();
+    const otherOrganization = await createTestOrganization();
+
+    await createMembership(superUser.id, organization.id, "super_user");
+    const memberMembership = await createMembership(
+      member.id,
+      otherOrganization.id,
+      "member",
+    );
+
+    await expect(
+      removeMembership(
+        superUser.id,
+        organization.id,
+        memberMembership.id,
+        prisma,
+      ),
+    ).rejects.toMatchObject({ code: "MEMBERSHIP_NOT_FOUND" });
+
+    expect(
+      await prisma.membership.findUnique({
+        where: { id: memberMembership.id },
+      }),
+    ).not.toBeNull();
+  });
+
+  test("unassigns a Manager's Members when removing that Manager", async () => {
+    const superUser = await createTestUser();
+    const manager = await createTestUser();
+    const member = await createTestUser();
+    const organization = await createTestOrganization();
+
+    await createMembership(superUser.id, organization.id, "super_user");
+    const managerMembership = await createMembership(
+      manager.id,
+      organization.id,
+      "manager",
+    );
+    const memberMembership = await createMembership(
+      member.id,
+      organization.id,
+      "member",
+      { managerMembershipId: managerMembership.id },
+    );
+
+    await removeMembership(
+      superUser.id,
+      organization.id,
+      managerMembership.id,
+      prisma,
+    );
+
+    const updatedMember = await prisma.membership.findUniqueOrThrow({
+      where: { id: memberMembership.id },
+    });
+
+    expect(updatedMember.managerMembershipId).toBeNull();
+    expect(
+      await prisma.membership.findUnique({
+        where: { id: managerMembership.id },
+      }),
+    ).toBeNull();
+  });
+
+  test("unassigns a Manager from pending invitations when removing that Manager", async () => {
+    const superUser = await createTestUser();
+    const manager = await createTestUser();
+    const organization = await createTestOrganization();
+
+    await createMembership(superUser.id, organization.id, "super_user");
+    const managerMembership = await createMembership(
+      manager.id,
+      organization.id,
+      "manager",
+    );
+
+    const invitation = await prisma.invitation.create({
+      data: {
+        organizationId: organization.id,
+        invitedEmail: `invite-${randomUUID()}@example.com`,
+        roleId: await getRoleId("member"),
+        managerMembershipId: managerMembership.id,
+        tokenHash: randomUUID(),
+        expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+        createdByMembershipId: managerMembership.id,
+      },
+    });
+
+    await removeMembership(
+      superUser.id,
+      organization.id,
+      managerMembership.id,
+      prisma,
+    );
+
+    const updatedInvitation = await prisma.invitation.findUniqueOrThrow({
+      where: { id: invitation.id },
+    });
+
+    expect(updatedInvitation.managerMembershipId).toBeNull();
+    expect(updatedInvitation.revokedAt).not.toBeNull();
+    expect(updatedInvitation.createdByMembershipId).toBeNull();
+  });
+
+  test("rolls back membership removal when audit creation fails", async () => {
+    const superUser = await createTestUser();
+    const manager = await createTestUser();
+    const member = await createTestUser();
+    const organization = await createTestOrganization();
+
+    await createMembership(superUser.id, organization.id, "super_user");
+
+    const managerMembership = await createMembership(
+      manager.id,
+      organization.id,
+      "manager",
+    );
+
+    const memberMembership = await createMembership(
+      member.id,
+      organization.id,
+      "member",
+      { managerMembershipId: managerMembership.id },
+    );
+
+    // The membership deletion and reassignment must both roll back.
+    expect(
+      await prisma.membership.findUnique({
+        where: { id: managerMembership.id },
+      }),
+    ).not.toBeNull();
+
+    const updatedMember = await prisma.membership.findUniqueOrThrow({
+      where: { id: memberMembership.id },
+    });
+
+    expect(updatedMember.managerMembershipId).toBe(managerMembership.id);
   });
 });
