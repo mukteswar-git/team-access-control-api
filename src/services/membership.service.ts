@@ -10,6 +10,7 @@ import {
 } from "../repositories/membership.repository.js";
 import { MembershipError } from "./membership.errors.js";
 import { prisma, type DatabaseClient } from "../lib/prisma.js";
+import { createAuditLog } from "./audit-log.service.js";
 
 async function assertMembershipReadAccess(
   actorUserId: string,
@@ -252,19 +253,17 @@ export async function changeMembershipRole(
       select: { id: true },
     });
 
-    await tx.auditLog.create({
-      data: {
-        organizationId,
-        actorUserId,
-        actorMembershipId: actorMembership?.id ?? null,
-        action: "membership.role_changed",
-        result: "success",
-        targetType: "membership",
-        targetId: target.id,
-        metadata: {
-          previousRole: previousRoleCode,
-          newRole: updatedMembership.role.code,
-        },
+    await createAuditLog(tx, {
+      organizationId,
+      actorUserId,
+      actorMembershipId: actorMembership?.id ?? null,
+      action: "membership.role_changed",
+      result: "success",
+      targetType: "membership",
+      targetId: target.id,
+      metadata: {
+        previousRole: previousRoleCode,
+        newRole: updatedMembership.role.code,
       },
     });
 
@@ -439,24 +438,22 @@ export async function updateMembershipReportingAssignment(
       include: { role: true },
     });
 
-    await tx.auditLog.create({
-      data: {
-        organizationId,
-        actorUserId,
-        actorMembershipId: actor.id,
-        action: "membership.reporting_assignment_changed",
-        result: "success",
-        targetType: "membership",
-        targetId: target.id,
-        metadata: {
-          role: target.role.code,
-          ...previousAssignment,
-          ...(isManagerAssignment
-            ? { newAdminMembershipId: updatedMembership.adminMembershipId }
-            : {
-                newManagerMembershipId: updatedMembership.managerMembershipId,
-              }),
-        },
+    await createAuditLog(tx, {
+      organizationId,
+      actorUserId,
+      actorMembershipId: actor.id,
+      action: "membership.reporting_assignment_changed",
+      result: "success",
+      targetType: "membership",
+      targetId: target.id,
+      metadata: {
+        role: target.role.code,
+        ...previousAssignment,
+        ...(isManagerAssignment
+          ? { newAdminMembershipId: updatedMembership.adminMembershipId }
+          : {
+              newManagerMembershipId: updatedMembership.managerMembershipId,
+            }),
       },
     });
 
@@ -571,18 +568,16 @@ export async function removeMembership(
       where: { id: target.id },
     });
 
-    await tx.auditLog.create({
-      data: {
-        organizationId,
-        actorUserId,
-        actorMembershipId: actor?.id ?? null,
-        action: "membership.removed",
-        result: "success",
-        targetType: "membership",
-        targetId: target.id,
-        metadata: {
-          removedRole: target.role.code,
-        },
+    await createAuditLog(tx, {
+      organizationId,
+      actorUserId,
+      actorMembershipId: actor?.id ?? null,
+      action: "membership.removed",
+      result: "success",
+      targetType: "membership",
+      targetId: target.id,
+      metadata: {
+        removedRole: target.role.code,
       },
     });
 
