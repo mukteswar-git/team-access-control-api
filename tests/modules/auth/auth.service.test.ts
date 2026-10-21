@@ -26,6 +26,7 @@ jest.unstable_mockModule("../../../src/lib/email.js", () => ({
 const {
   registerUser,
   verifyEmail,
+  requestEmailVerification,
   loginUser,
   logoutUser,
   validateSession,
@@ -262,6 +263,176 @@ describe("Auth service — registerUser", () => {
       await prisma.user.delete({ where: { id: user.id } });
     }
   });
+
+  test("does not allow concurrent reuse of a verification token", async () => {
+    const { user, rawToken } = await createVerificationFixture();
+
+    try {
+      const results = await Promise.allSettled([
+        verifyEmail(rawToken),
+        verifyEmail(rawToken),
+      ]);
+
+      const successfulVerifications = results.filter(
+        (result) => result.status === "fulfilled",
+      );
+
+      const failedVerifications = results.filter(
+        (result) => result.status === "rejected",
+      );
+
+      expect(successfulVerifications).toHaveLength(1);
+      expect(failedVerifications).toHaveLength(1);
+
+      const token = await prisma.emailVerificationToken.findFirst({
+        where: { userId: user.id },
+      });
+
+      const updatedUser = await prisma.user.findUniqueOrThrow({
+        where: { id: user.id },
+      });
+
+      expect(token?.usedAt).toBeInstanceOf(Date);
+      expect(updatedUser.emailVerifiedAt).toBeInstanceOf(Date);
+    } finally {
+      await prisma.user.delete({ where: { id: user.id } });
+    }
+  });
+});
+
+describe("Auth service — requestEmailVerification", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  test("sends a verification link and stores only the token hash", async () => {
+    const user = await prisma.user.create({
+      data: {
+        email: `resend-${randomUUID()}@example.com`,
+        passwordHash: "test-hash",
+      },
+    });
+
+    try {
+      await expect(
+        requestEmailVerification(user.email),
+      ).resolves.toBeUndefined();
+
+      expect(mockSendEmail).toHaveBeenCalledTimes(1);
+
+      const email = mockSendEmail.mock.calls[0]![0];
+      expect(email.to).toBe(user.email);
+      expect(email.subject).toContain("Verify your email");
+
+      const match = email.html.match(/[?&]token=([a-f0-9]{64})/);
+      expect(match).not.toBeNull();
+
+      const rawToken = match![1]!;
+      const tokenHash = createHash("sha256").update(rawToken).digest("hex");
+
+      const token = await prisma.emailVerificationToken.findUnique({
+        where: { tokenHash },
+      });
+
+      expect(token).not.toBeNull();
+      expect(token?.userId).toBe(user.id);
+      expect(token?.usedAt).toBeNull();
+      expect(token?.expiresAt.getTime()).toBeGreaterThan(Date.now());
+      expect(tokenHash).not.toBe(rawToken);
+    } finally {
+      await prisma.user.delete({ where: { id: user.id } });
+    }
+  });
+
+  test("does not reveal whether an account exists", async () => {
+    const unknownEmail = `unknown-${randomUUID()}@example.com`;
+
+    await expect(
+      requestEmailVerification(unknownEmail),
+    ).resolves.toBeUndefined();
+
+    expect(mockSendEmail).not.toHaveBeenCalled();
+  });
+
+  test("does not send another verification email to an already-verified user", async () => {
+    const user = await prisma.user.create({
+      data: {
+        email: `verified-${randomUUID()}@example.com`,
+        passwordHash: "test-hash",
+        emailVerifiedAt: new Date(),
+      },
+    });
+
+    try {
+      await expect(
+        requestEmailVerification(user.email),
+      ).resolves.toBeUndefined();
+
+      expect(mockSendEmail).not.toHaveBeenCalled();
+    } finally {
+      await prisma.user.delete({ where: { id: user.id } });
+    }
+  });
+
+  test("invalidates previous unused tokens when requesting a new email", async () => {
+    const { user } = await createLoginFixture({ emailVerified: false });
+
+    const oldRawToken = randomUUID() + randomUUID();
+    const oldTokenHash = createHash("sha256").update(oldRawToken).digest("hex");
+
+    try {
+      await prisma.emailVerificationToken.create({
+        data: {
+          userId: user.id,
+          tokenHash: oldTokenHash,
+          expiresAt: new Date(Date.now() + 60_000),
+        },
+      });
+
+      await requestEmailVerification(user.email);
+
+      const oldToken = await prisma.emailVerificationToken.findUnique({
+        where: { tokenHash: oldTokenHash },
+      });
+
+      expect(oldToken).toBeNull();
+      expect(mockSendEmail).toHaveBeenCalledTimes(1);
+    } finally {
+      await prisma.user.delete({ where: { id: user.id } });
+    }
+  });
+
+  test("removes the new unused token when email delivery fails", async () => {
+    const user = await prisma.user.create({
+      data: {
+        email: `delivery-failure-${randomUUID()}@example.com`,
+        passwordHash: "test-hash",
+      },
+    });
+
+    mockSendEmail.mockRejectedValueOnce(new Error("Email delivery failed"));
+
+    try {
+      await expect(requestEmailVerification(user.email)).rejects.toThrow(
+        "Email delivery failed",
+      );
+
+      const email = mockSendEmail.mock.calls[0]![0];
+      const match = email.html.match(/[?&]token=([a-f0-9]{64})/);
+
+      expect(match).not.toBeNull();
+
+      const tokenHash = createHash("sha256").update(match![1]!).digest("hex");
+
+      await expect(
+        prisma.emailVerificationToken.findUnique({
+          where: { tokenHash },
+        }),
+      ).resolves.toBeNull();
+    } finally {
+      await prisma.user.delete({ where: { id: user.id } });
+    }
+  });
 });
 
 describe("Auth service — loginUser", () => {
@@ -456,6 +627,10 @@ describe("Auth service — validateSession", () => {
 });
 
 describe("Auth service — requestPasswordReset", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
   test("sends a reset link and stores only the token hash", async () => {
     const { user } = await createLoginFixture();
 
