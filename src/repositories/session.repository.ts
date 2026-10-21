@@ -74,3 +74,37 @@ export function revokeSessionById(
     },
   });
 }
+
+export function findSessionsByUserId(
+  userId: string,
+  db: DatabaseClient = prisma,
+) {
+  return db.session.findMany({
+    where: { userId },
+    select: {
+      id: true,
+      createdAt: true,
+      expiresAt: true,
+      lastUsedAt: true,
+      revokedAt: true,
+    },
+    orderBy: { createdAt: "desc" },
+  });
+}
+
+export function revokeSessionByIdForUser(
+  sessionId: string,
+  userId: string,
+  db: DatabaseClient = prisma,
+) {
+  return db.session.updateMany({
+    where: {
+      id: sessionId,
+      userId,
+      revokedAt: null,
+    },
+    data: {
+      revokedAt: new Date(),
+    },
+  });
+}
