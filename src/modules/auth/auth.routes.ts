@@ -19,6 +19,9 @@ import {
   requestPasswordResetController,
   resetPasswordController,
   logout,
+  listSessions,
+  revokeSession,
+  revokeAllSessions,
 } from "./auth.controller.js";
 import { requireAuth } from "../../middleware/require-auth.js";
 
@@ -43,5 +46,8 @@ router.post(
 );
 
 router.post("/logout", requireAuth, logout);
+router.get("/sessions", requireAuth, listSessions);
+router.delete("/sessions", requireAuth, revokeAllSessions);
+router.delete("/sessions/:sessionId", requireAuth, revokeSession);
 
 export default router;
