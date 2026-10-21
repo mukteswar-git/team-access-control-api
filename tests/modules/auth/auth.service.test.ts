@@ -611,6 +611,81 @@ describe("Auth service — resetPassword", () => {
       await prisma.user.delete({ where: { id: user.id } });
     }
   });
+
+  test("rejects a password shorter than 8 characters", async () => {
+    await expect(resetPassword("some-token", "Short1")).rejects.toMatchObject({
+      code: "INVALID_INPUT",
+    });
+  });
+
+  test("rejects a password longer than 128 characters", async () => {
+    await expect(
+      resetPassword("some-token", "a".repeat(129)),
+    ).rejects.toMatchObject({
+      code: "INVALID_INPUT",
+    });
+  });
+
+  test("removes the reset token when email delivery fails", async () => {
+    const { user } = await createLoginFixture();
+
+    mockSendEmail.mockRejectedValueOnce(new Error("Email delivery failed"));
+
+    try {
+      await expect(requestPasswordReset(user.email)).rejects.toThrow(
+        "Email delivery failed",
+      );
+
+      const email = mockSendEmail.mock.calls[0][0];
+      const match = email.html.match(/[?&]token=([a-f0-9]{64})/);
+
+      expect(match).not.toBeNull();
+
+      const tokenHash = createHash("sha256").update(match![1]).digest("hex");
+
+      await expect(
+        prisma.passwordResetToken.findUnique({
+          where: { tokenHash },
+        }),
+      ).resolves.toBeNull();
+    } finally {
+      await prisma.user.delete({
+        where: { id: user.id },
+      });
+    }
+  });
+
+  test("does not allow concurrent reuse of a reset token", async () => {
+    const { user, rawToken } = await createPasswordResetFixture();
+
+    try {
+      const results = await Promise.allSettled([
+        resetPassword(rawToken, "FirstNewPassword123"),
+        resetPassword(rawToken, "SecondNewPassword456"),
+      ]);
+
+      const successfulResets = results.filter(
+        (result) => result.status === "fulfilled",
+      );
+
+      const failedResets = results.filter(
+        (result) => result.status === "rejected",
+      );
+
+      expect(successfulResets).toHaveLength(1);
+      expect(failedResets).toHaveLength(1);
+
+      const storedToken = await prisma.passwordResetToken.findFirst({
+        where: { userId: user.id },
+      });
+
+      expect(storedToken?.usedAt).not.toBeNull();
+    } finally {
+      await prisma.user.delete({
+        where: { id: user.id },
+      });
+    }
+  });
 });
 
 describe("Auth service — session management", () => {
