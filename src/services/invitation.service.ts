@@ -11,6 +11,7 @@ import {
   findInvitationByTokenHash,
   findPendingInvitation,
 } from "../repositories/invitation.repository.js";
+import { createAuditLog } from "./audit-log.service.js";
 
 export type InvitationStatus = "pending" | "expired" | "revoked" | "accepted";
 
@@ -359,20 +360,18 @@ export async function createInvitation(
     });
 
     // The audit event is part of the same transaction.
-    await tx.auditLog.create({
-      data: {
-        organizationId,
-        actorUserId,
-        actorMembershipId: actor.id,
-        action: "invitation.created",
-        result: "success",
-        targetType: "invitation",
-        targetId: invitation.id,
-        metadata: {
-          email: input.email,
-          roleCode: input.roleCode,
-          expiresAt: expiresAt.toISOString(),
-        },
+    await createAuditLog(tx, {
+      organizationId,
+      actorUserId,
+      actorMembershipId: actor.id,
+      action: "invitation.created",
+      result: "success",
+      targetType: "invitation",
+      targetId: invitation.id,
+      metadata: {
+        email: input.email,
+        roleCode: input.roleCode,
+        expiresAt: expiresAt.toISOString(),
       },
     });
 
@@ -485,18 +484,16 @@ export async function revokeInvitation(
       );
     }
 
-    await tx.auditLog.create({
-      data: {
-        organizationId,
-        actorUserId,
-        actorMembershipId: actor.id,
-        action: "invitation.revoked",
-        result: "success",
-        targetType: "invitation",
-        targetId: invitation.id,
-        metadata: {
-          invitedEmail: invitation.invitedEmail,
-        },
+    await createAuditLog(tx, {
+      organizationId,
+      actorUserId,
+      actorMembershipId: actor.id,
+      action: "invitation.revoked",
+      result: "success",
+      targetType: "invitation",
+      targetId: invitation.id,
+      metadata: {
+        invitedEmail: invitation.invitedEmail,
       },
     });
 
@@ -588,17 +585,15 @@ export async function acceptInvitation(
         );
       }
 
-      await tx.auditLog.create({
-        data: {
-          organizationId: invitation.organizationId,
-          actorUserId: user.id,
-          actorMembershipId: existingMembership.id,
-          action: "invitation.closed",
-          result: "success",
-          targetType: "invitation",
-          targetId: invitation.id,
-          metadata: { reason: "already_member" },
-        },
+      await createAuditLog(tx, {
+        organizationId: invitation.organizationId,
+        actorUserId: user.id,
+        actorMembershipId: existingMembership.id,
+        action: "invitation.closed",
+        result: "success",
+        targetType: "invitation",
+        targetId: invitation.id,
+        metadata: { reason: "already_member" },
       });
 
       return null;
@@ -720,19 +715,17 @@ export async function acceptInvitation(
       },
     });
 
-    await tx.auditLog.create({
-      data: {
-        organizationId: invitation.organizationId,
-        actorUserId: user.id,
-        actorMembershipId: membership.id,
-        action: "invitation.accepted",
-        result: "success",
-        targetType: "invitation",
-        targetId: invitation.id,
-        metadata: {
-          roleCode: role.code,
-          membershipId: membership.id,
-        },
+    await createAuditLog(tx, {
+      organizationId: invitation.organizationId,
+      actorUserId: user.id,
+      actorMembershipId: membership.id,
+      action: "invitation.accepted",
+      result: "success",
+      targetType: "invitation",
+      targetId: invitation.id,
+      metadata: {
+        roleCode: role.code,
+        membershipId: membership.id,
       },
     });
 
