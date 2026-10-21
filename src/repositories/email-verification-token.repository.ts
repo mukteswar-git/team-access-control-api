@@ -45,3 +45,27 @@ export async function consumeEmailVerificationToken(
     },
   });
 }
+
+export function invalidateUnusedEmailVerificationTokens(
+  userId: string,
+  db: DatabaseClient = prisma,
+) {
+  return db.emailVerificationToken.deleteMany({
+    where: {
+      userId,
+      usedAt: null,
+    },
+  });
+}
+
+export function deleteEmailVerificationToken(
+  tokenHash: string,
+  db: DatabaseClient = prisma,
+) {
+  return db.emailVerificationToken.deleteMany({
+    where: {
+      tokenHash,
+      usedAt: null,
+    },
+  });
+}
