@@ -9,6 +9,8 @@ import {
   findSessionByTokenHash,
   revokeSessionByTokenHash,
   revokeAllSessionsForUser,
+  findSessionsByUserId,
+  revokeSessionByIdForUser,
 } from "../../src/repositories/session.repository.js";
 
 describe("Session repository", () => {
@@ -188,5 +190,76 @@ describe("Session repository", () => {
     expect(session1?.revokedAt).toBeInstanceOf(Date);
     expect(session2?.revokedAt).toBeInstanceOf(Date);
     expect(session3?.revokedAt).toBeNull();
+  });
+
+  test("lists session metadata without exposing token hashes", async () => {
+    const user = await prisma.user.create({
+      data: {
+        email: `${randomUUID()}@example.com`,
+        passwordHash: "test-hash",
+      },
+    });
+
+    createdUserIds.push(user.id);
+
+    const tokenHash = randomUUID();
+
+    await createSession({
+      userId: user.id,
+      tokenHash,
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+    });
+
+    const sessions = await findSessionsByUserId(user.id);
+
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]).toMatchObject({
+      id: expect.any(String),
+      createdAt: expect.any(Date),
+      expiresAt: expect.any(Date),
+      lastUsedAt: null,
+      revokedAt: null,
+    });
+    expect(sessions[0]).not.toHaveProperty("tokenHash");
+  });
+
+  test("revokes a session only when both session ID and user ID match", async () => {
+    const user1 = await prisma.user.create({
+      data: {
+        email: `${randomUUID()}@example.com`,
+        passwordHash: "test-hash",
+      },
+    });
+    createdUserIds.push(user1.id);
+
+    const user2 = await prisma.user.create({
+      data: {
+        email: `${randomUUID()}@example.com`,
+        passwordHash: "test-hash",
+      },
+    });
+    createdUserIds.push(user2.id);
+
+    const tokenHash = randomUUID();
+
+    const session = await createSession({
+      userId: user1.id,
+      tokenHash,
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+    });
+
+    const unauthorizedResult = await revokeSessionByIdForUser(
+      session.id,
+      user2.id,
+    );
+
+    expect(unauthorizedResult.count).toBe(0);
+
+    const result = await revokeSessionByIdForUser(session.id, user1.id);
+
+    expect(result.count).toBe(1);
+
+    const storedSession = await findSessionByTokenHash(tokenHash);
+    expect(storedSession?.revokedAt).toBeInstanceOf(Date);
   });
 });

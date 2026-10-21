@@ -31,6 +31,9 @@ const {
   validateSession,
   requestPasswordReset,
   resetPassword,
+  listUserSessions,
+  revokeUserSession,
+  revokeAllUserSessions,
 } = await import("../../../src/modules/auth/auth.service.js");
 
 async function createVerificationFixture(
@@ -604,6 +607,95 @@ describe("Auth service — resetPassword", () => {
       expect(login.user.id).toBe(user.id);
 
       await logoutUser(login.session.token);
+    } finally {
+      await prisma.user.delete({ where: { id: user.id } });
+    }
+  });
+});
+
+describe("Auth service — session management", () => {
+  test("lists session metadata without exposing token hashes", async () => {
+    const { user, password } = await createLoginFixture();
+    const login = await loginUser({ email: user.email, password });
+
+    try {
+      const sessions = await listUserSessions(user.id);
+
+      expect(sessions).toHaveLength(1);
+      expect(sessions[0]).toMatchObject({
+        id: login.session.id,
+        expiresAt: expect.any(Date),
+        createdAt: expect.any(Date),
+      });
+      expect(sessions[0]).not.toHaveProperty("tokenHash");
+    } finally {
+      await prisma.user.delete({ where: { id: user.id } });
+    }
+  });
+
+  test("revokes a session belonging to the specified user", async () => {
+    const { user, password } = await createLoginFixture();
+    const login = await loginUser({ email: user.email, password });
+
+    try {
+      await expect(
+        revokeUserSession(user.id, login.session.id),
+      ).resolves.toEqual({ revoked: true });
+
+      await expect(validateSession(login.session.token)).resolves.toBeNull();
+    } finally {
+      await prisma.user.delete({ where: { id: user.id } });
+    }
+  });
+
+  test("does not revoke another user's session", async () => {
+    const first = await createLoginFixture();
+    const second = await createLoginFixture();
+    const login = await loginUser({
+      email: first.user.email,
+      password: first.password,
+    });
+
+    try {
+      await expect(
+        revokeUserSession(second.user.id, login.session.id),
+      ).resolves.toEqual({ revoked: false });
+
+      await expect(validateSession(login.session.token)).resolves.toMatchObject(
+        {
+          user: { id: first.user.id },
+        },
+      );
+    } finally {
+      await prisma.user.deleteMany({
+        where: { id: { in: [first.user.id, second.user.id] } },
+      });
+    }
+  });
+
+  test("revokes all sessions belonging to a user", async () => {
+    const { user, password } = await createLoginFixture();
+    const first = await loginUser({ email: user.email, password });
+    const second = await loginUser({ email: user.email, password });
+
+    try {
+      const result = await revokeAllUserSessions(user.id);
+
+      expect(result.revokedCount).toBe(2);
+      await expect(validateSession(first.session.token)).resolves.toBeNull();
+      await expect(validateSession(second.session.token)).resolves.toBeNull();
+    } finally {
+      await prisma.user.delete({ where: { id: user.id } });
+    }
+  });
+
+  test("returns false when revoking a nonexistent session", async () => {
+    const { user } = await createLoginFixture();
+
+    try {
+      await expect(revokeUserSession(user.id, randomUUID())).resolves.toEqual({
+        revoked: false,
+      });
     } finally {
       await prisma.user.delete({ where: { id: user.id } });
     }

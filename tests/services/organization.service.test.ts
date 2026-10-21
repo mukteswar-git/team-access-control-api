@@ -622,7 +622,6 @@ describe("Organization service", () => {
     }
   });
 
-
   test("cleans up reporting relationships when transferring ownership to an Admin", async () => {
     const users = await Promise.all(
       Array.from({ length: 7 }, () => createTestUser()),
@@ -717,9 +716,11 @@ describe("Organization service", () => {
         where: { id: member.id },
       });
 
-      const updatedUnrelatedManager = await prisma.membership.findUniqueOrThrow({
-        where: { id: unrelatedManager.id },
-      });
+      const updatedUnrelatedManager = await prisma.membership.findUniqueOrThrow(
+        {
+          where: { id: unrelatedManager.id },
+        },
+      );
 
       const updatedUnrelatedMember = await prisma.membership.findUniqueOrThrow({
         where: { id: unrelatedMember.id },
@@ -834,9 +835,11 @@ describe("Organization service", () => {
         include: { role: true },
       });
 
-      const updatedUnrelatedManager = await prisma.membership.findUniqueOrThrow({
-        where: { id: unrelatedManager.id },
-      });
+      const updatedUnrelatedManager = await prisma.membership.findUniqueOrThrow(
+        {
+          where: { id: unrelatedManager.id },
+        },
+      );
 
       const updatedUnrelatedMember = await prisma.membership.findUniqueOrThrow({
         where: { id: unrelatedMember.id },

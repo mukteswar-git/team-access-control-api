@@ -19,9 +19,10 @@ import { SESSION_TTL_MS } from "../../constants/auth.js";
 import {
   createSession,
   findSessionByTokenHash,
+  findSessionsByUserId,
   revokeSessionByTokenHash,
   revokeAllSessionsForUser,
-  revokeSessionById,
+  revokeSessionByIdForUser,
 } from "../../repositories/session.repository.js";
 import { PASSWORD_RESET_TOKEN_TTL_MS } from "../../constants/auth.js";
 import {
@@ -340,10 +341,34 @@ export async function resetPassword(token: string, newPassword: string) {
   });
 }
 
-export async function logoutSession(sessionId: string) {
-  if (!sessionId) {
-    return;
+export async function listUserSessions(userId: string) {
+  if (!userId) {
+    throw new AuthError("INVALID_INPUT", "User ID is required");
   }
 
-  await revokeSessionById(sessionId);
+  return findSessionsByUserId(userId);
+}
+
+export async function revokeUserSession(userId: string, sessionId: string) {
+  if (!userId || !sessionId) {
+    throw new AuthError("INVALID_INPUT", "User ID and session ID are required");
+  }
+
+  const result = await revokeSessionByIdForUser(sessionId, userId);
+
+  return { revoked: result.count === 1 };
+}
+
+export async function revokeAllUserSessions(userId: string) {
+  if (!userId) {
+    throw new AuthError("INVALID_INPUT", "User ID is required");
+  }
+
+  const result = await revokeAllSessionsForUser(userId);
+
+  return { revokedCount: result.count };
+}
+
+export async function logoutSession(userId: string, sessionId: string) {
+  return revokeUserSession(userId, sessionId);
 }
