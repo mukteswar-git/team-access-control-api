@@ -9,6 +9,8 @@ import {
   consumeEmailVerificationToken,
   createEmailVerificationToken,
   findEmailVerificationTokenByHash,
+  invalidateUnusedEmailVerificationTokens,
+  deleteEmailVerificationToken,
 } from "../../repositories/email-verification-token.repository.js";
 import {
   createUser,
@@ -115,6 +117,63 @@ export async function registerUser(data: RegisterUserData) {
       if (Array.isArray(target) && target.includes("email")) {
         throw new AuthError("EMAIL_ALREADY_EXISTS", "Email already exists");
       }
+    }
+
+    throw error;
+  }
+}
+
+export async function requestEmailVerification(email: string) {
+  const normalizedEmail = normalizeEmail(email);
+
+  if (!normalizedEmail) {
+    return;
+  }
+
+  const user = await findUserByEmail(normalizedEmail);
+
+  // Do not reveal whether an account exists or is already verified.
+  if (!user || user.emailVerifiedAt) {
+    return;
+  }
+
+  const rawToken = randomBytes(32).toString("hex");
+  const tokenHash = createHash("sha256").update(rawToken).digest("hex");
+  const now = new Date();
+
+  await prisma.$transaction(async (tx) => {
+    await invalidateUnusedEmailVerificationTokens(user.id, tx);
+
+    await createEmailVerificationToken(
+      {
+        userId: user.id,
+        tokenHash,
+        expiresAt: new Date(now.getTime() + EMAIL_VERIFICATION_TOKEN_TTL_MS),
+      },
+      tx,
+    );
+  });
+
+  const verificationUrl = `${env.FRONTEND_URL}/verify-email?token=${rawToken}`;
+
+  try {
+    await sendEmail({
+      to: user.email,
+      subject: "Verify your email — Team Access Control",
+      html: `
+        <h1>Verify your email</h1>
+        <p>Click the link below to verify your email address:</p>
+        <p>
+          <a href="${verificationUrl}">Verify email address</a>
+        </p>
+        <p>This link expires in 24 hours.</p>
+      `,
+    });
+  } catch (error) {
+    try {
+      await deleteEmailVerificationToken(tokenHash);
+    } catch {
+      // Preserve the original email delivery error.
     }
 
     throw error;
