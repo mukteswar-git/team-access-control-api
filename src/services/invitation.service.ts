@@ -8,7 +8,8 @@ import { createHash, randomBytes } from "node:crypto";
 import { INVITATION_TOKEN_TTL_MS } from "../constants/auth.js";
 import {
   findInvitationById,
-  findPendingInvitation
+  findInvitationByTokenHash,
+  findPendingInvitation,
 } from "../repositories/invitation.repository.js";
 
 export type InvitationStatus = "pending" | "expired" | "revoked" | "accepted";
@@ -505,4 +506,250 @@ export async function revokeInvitation(
       revokedAt: now,
     };
   });
+}
+
+export async function acceptInvitation(
+  userId: string,
+  token: string,
+  db: DatabaseClient = prisma,
+) {
+  if (!z.string().uuid().safeParse(userId).success || !token.trim()) {
+    throw new InvitationError("INVALID_INPUT", "Invalid acceptance input.");
+  }
+
+  const tokenHash = createHash("sha256").update(token).digest("hex");
+
+  const result = await db.$transaction(async (tx) => {
+    const invitation = await findInvitationByTokenHash(tokenHash, tx);
+
+    if (!invitation) {
+      throw new InvitationError(
+        "INVITATION_NOT_FOUND",
+        "Invitation not found.",
+      );
+    }
+
+    const now = new Date();
+    const status = getInvitationStatus(invitation, now);
+
+    if (status !== "pending") {
+      throw new InvitationError(
+        "INVALID_INVITATION_STATE",
+        `Cannot accept an invitation with status "${status}".`,
+      );
+    }
+
+    const user = await tx.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        email: true,
+        emailVerifiedAt: true,
+      },
+    });
+
+    if (!user || !user.emailVerifiedAt) {
+      throw new InvitationError(
+        "EMAIL_NOT_VERIFIED",
+        "A verified account is required to accept an invitation.",
+      );
+    }
+
+    if (
+      normalizeEmail(user.email) !== normalizeEmail(invitation.invitedEmail)
+    ) {
+      throw new InvitationError(
+        "EMAIL_MISMATCH",
+        "Your verified email does not match the invited email.",
+      );
+    }
+
+    const existingMembership = await findMembershipByUserAndOrganization(
+      user.id,
+      invitation.organizationId,
+      tx,
+    );
+
+    if (existingMembership) {
+      const result = await tx.invitation.updateMany({
+        where: {
+          id: invitation.id,
+          acceptedAt: null,
+          revokedAt: null,
+          expiresAt: { gt: now },
+        },
+        data: { revokedAt: now },
+      });
+
+      if (result.count !== 1) {
+        throw new InvitationError(
+          "INVALID_INVITATION_STATE",
+          "Invitation is no longer pending.",
+        );
+      }
+
+      await tx.auditLog.create({
+        data: {
+          organizationId: invitation.organizationId,
+          actorUserId: user.id,
+          actorMembershipId: existingMembership.id,
+          action: "invitation.closed",
+          result: "success",
+          targetType: "invitation",
+          targetId: invitation.id,
+          metadata: { reason: "already_member" },
+        },
+      });
+
+      return null;
+    }
+
+    const role = await tx.role.findUnique({
+      where: { id: invitation.roleId },
+      select: { id: true, code: true },
+    });
+
+    if (!role || !["admin", "manager", "member"].includes(role.code)) {
+      throw new InvitationError(
+        "ROLE_NOT_FOUND",
+        "The invitation role is no longer valid.",
+      );
+    }
+
+    let adminMembershipId: string | null = null;
+    let managerMembershipId: string | null = null;
+
+    if (role.code === "admin") {
+      if (
+        invitation.adminMembershipId !== null ||
+        invitation.managerMembershipId !== null
+      ) {
+        throw new InvitationError(
+          "INVALID_ASSIGNMENT",
+          "Admin invitations cannot have reporting assignments.",
+        );
+      }
+    } else if (role.code === "manager") {
+      if (invitation.managerMembershipId !== null) {
+        throw new InvitationError(
+          "INVALID_ASSIGNMENT",
+          "Manager invitations cannot have a manager assignment.",
+        );
+      }
+
+      if (invitation.adminMembershipId !== null) {
+        const admin = await tx.membership.findFirst({
+          where: {
+            id: invitation.adminMembershipId,
+            organizationId: invitation.organizationId,
+            role: { code: "admin" },
+          },
+          select: { id: true },
+        });
+
+        if (!admin) {
+          throw new InvitationError(
+            "INVALID_ASSIGNMENT",
+            "The assigned Admin is no longer valid.",
+          );
+        }
+
+        adminMembershipId = admin.id;
+      }
+    } else {
+      if (invitation.adminMembershipId !== null) {
+        throw new InvitationError(
+          "INVALID_ASSIGNMENT",
+          "Member invitations cannot have an Admin assignment.",
+        );
+      }
+
+      if (invitation.managerMembershipId !== null) {
+        const manager = await tx.membership.findFirst({
+          where: {
+            id: invitation.managerMembershipId,
+            organizationId: invitation.organizationId,
+            role: { code: "manager" },
+          },
+          select: { id: true },
+        });
+
+        if (!manager) {
+          throw new InvitationError(
+            "INVALID_ASSIGNMENT",
+            "The assigned Manager is no longer valid.",
+          );
+        }
+
+        managerMembershipId = manager.id;
+      }
+    }
+
+    const result = await tx.invitation.updateMany({
+      where: {
+        id: invitation.id,
+        acceptedAt: null,
+        revokedAt: null,
+        expiresAt: { gt: now },
+      },
+      data: { acceptedAt: now },
+    });
+
+    if (result.count !== 1) {
+      throw new InvitationError(
+        "INVALID_INVITATION_STATE",
+        "Invitation is no longer pending.",
+      );
+    }
+
+    const membership = await tx.membership.create({
+      data: {
+        organizationId: invitation.organizationId,
+        userId: user.id,
+        roleId: role.id,
+        adminMembershipId,
+        managerMembershipId,
+      },
+      select: {
+        id: true,
+        organizationId: true,
+        userId: true,
+        roleId: true,
+        adminMembershipId: true,
+        managerMembershipId: true,
+      },
+    });
+
+    await tx.auditLog.create({
+      data: {
+        organizationId: invitation.organizationId,
+        actorUserId: user.id,
+        actorMembershipId: membership.id,
+        action: "invitation.accepted",
+        result: "success",
+        targetType: "invitation",
+        targetId: invitation.id,
+        metadata: {
+          roleCode: role.code,
+          membershipId: membership.id,
+        },
+      },
+    });
+
+    return {
+      invitationId: invitation.id,
+      status: "accepted" as const,
+      acceptedAt: now,
+      membership,
+    };
+  });
+
+  if (result === null) {
+    throw new InvitationError(
+      "ALREADY_MEMBER",
+      "You are already a member of this organization.",
+    );
+  }
+
+  return result;
 }
