@@ -31,3 +31,15 @@ export async function findInvitationById(
     },
   });
 }
+
+export function findInvitationByTokenHash(
+  tokenHash: string,
+  db: DatabaseClient = prisma,
+) {
+  return db.invitation.findUnique({
+    where: { tokenHash },
+    include: {
+      role: true,
+    },
+  });
+}
