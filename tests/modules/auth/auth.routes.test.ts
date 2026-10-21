@@ -533,3 +533,228 @@ describe("POST /auth/logout", () => {
     }
   });
 });
+
+describe("GET /auth/sessions", () => {
+  test("rejects a request without a token", async () => {
+    const response = await request(app).get("/auth/sessions");
+
+    expect(response.status).toBe(401);
+    expect(response.body.error.code).toBe("UNAUTHENTICATED");
+  });
+
+  test("lists session metadata without exposing token hashes", async () => {
+    const email = `sessions-${randomUUID()}@example.com`;
+    const password = "Strong-test-password-123";
+
+    const user = await prisma.user.create({
+      data: {
+        email,
+        passwordHash: await argon2.hash(password, {
+          type: argon2.argon2id,
+        }),
+        emailVerifiedAt: new Date(),
+      },
+    });
+
+    try {
+      const loginResponse = await request(app)
+        .post("/auth/login")
+        .send({ email, password });
+
+      const token = loginResponse.body.sessionToken as string;
+
+      const response = await request(app)
+        .get("/auth/sessions")
+        .set("Authorization", `Bearer ${token}`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.sessions).toHaveLength(1);
+      expect(response.body.sessions[0]).toMatchObject({
+        id: expect.any(String),
+        createdAt: expect.any(String),
+        expiresAt: expect.any(String),
+      });
+      expect(response.body.sessions[0]).not.toHaveProperty("tokenHash");
+    } finally {
+      await prisma.session.deleteMany({ where: { userId: user.id } });
+      await prisma.user.delete({ where: { id: user.id } });
+    }
+  });
+});
+
+describe("DELETE /auth/sessions/:sessionId", () => {
+  test("rejects a request without a token", async () => {
+    const response = await request(app).delete(
+      `/auth/sessions/${randomUUID()}`,
+    );
+
+    expect(response.status).toBe(401);
+    expect(response.body.error.code).toBe("UNAUTHENTICATED");
+  });
+
+  test("revokes the authenticated user's session", async () => {
+    const email = `revoke-session-${randomUUID()}@example.com`;
+    const password = "Strong-test-password-123";
+
+    const user = await prisma.user.create({
+      data: {
+        email,
+        passwordHash: await argon2.hash(password, {
+          type: argon2.argon2id,
+        }),
+        emailVerifiedAt: new Date(),
+      },
+    });
+
+    try {
+      const loginResponse = await request(app)
+        .post("/auth/login")
+        .send({ email, password });
+
+      const token = loginResponse.body.sessionToken as string;
+      const session = await prisma.session.findFirstOrThrow({
+        where: { userId: user.id },
+      });
+
+      const response = await request(app)
+        .delete(`/auth/sessions/${session.id}`)
+        .set("Authorization", `Bearer ${token}`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.message).toBe("Session revoked successfully");
+
+      const revokedSession = await prisma.session.findUniqueOrThrow({
+        where: { id: session.id },
+      });
+
+      expect(revokedSession.revokedAt).toBeInstanceOf(Date);
+    } finally {
+      await prisma.session.deleteMany({ where: { userId: user.id } });
+      await prisma.user.delete({ where: { id: user.id } });
+    }
+  });
+
+  test("does not revoke another user's session", async () => {
+    const firstEmail = `owner-${randomUUID()}@example.com`;
+    const secondEmail = `other-${randomUUID()}@example.com`;
+    const password = "Strong-test-password-123";
+
+    const firstUser = await prisma.user.create({
+      data: {
+        email: firstEmail,
+        passwordHash: await argon2.hash(password, {
+          type: argon2.argon2id,
+        }),
+        emailVerifiedAt: new Date(),
+      },
+    });
+
+    const secondUser = await prisma.user.create({
+      data: {
+        email: secondEmail,
+        passwordHash: await argon2.hash(password, {
+          type: argon2.argon2id,
+        }),
+        emailVerifiedAt: new Date(),
+      },
+    });
+
+    try {
+      const loginResponse = await request(app)
+        .post("/auth/login")
+        .send({ email: firstEmail, password });
+
+      const token = loginResponse.body.sessionToken as string;
+      const otherSession = await prisma.session.create({
+        data: {
+          userId: secondUser.id,
+          tokenHash: createHash("sha256").update(randomUUID()).digest("hex"),
+          expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+        },
+      });
+
+      const response = await request(app)
+        .delete(`/auth/sessions/${otherSession.id}`)
+        .set("Authorization", `Bearer ${token}`);
+
+      expect(response.status).toBe(404);
+      expect(response.body.error.code).toBe("SESSION_NOT_FOUND");
+
+      const unchangedSession = await prisma.session.findUniqueOrThrow({
+        where: { id: otherSession.id },
+      });
+
+      expect(unchangedSession.revokedAt).toBeNull();
+    } finally {
+      await prisma.session.deleteMany({
+        where: { userId: { in: [firstUser.id, secondUser.id] } },
+      });
+      await prisma.user.deleteMany({
+        where: { id: { in: [firstUser.id, secondUser.id] } },
+      });
+    }
+  });
+});
+
+describe("DELETE /auth/sessions", () => {
+  test("rejects a request without a token", async () => {
+    const response = await request(app).delete("/auth/sessions");
+
+    expect(response.status).toBe(401);
+    expect(response.body.error.code).toBe("UNAUTHENTICATED");
+  });
+
+  test("revokes all sessions belonging to the authenticated user", async () => {
+    const user = await prisma.user.create({
+      data: {
+        email: `revoke-all-${randomUUID()}@example.com`,
+        passwordHash: await argon2.hash("Strong-test-password-123", {
+          type: argon2.argon2id,
+        }),
+        emailVerifiedAt: new Date(),
+      },
+    });
+
+    const firstToken = randomUUID();
+    const secondToken = randomUUID();
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
+
+    try {
+      await prisma.session.createMany({
+        data: [firstToken, secondToken].map((token) => ({
+          userId: user.id,
+          tokenHash: createHash("sha256").update(token).digest("hex"),
+          expiresAt,
+        })),
+      });
+
+      const response = await request(app)
+        .delete("/auth/sessions")
+        .set("Authorization", `Bearer ${firstToken}`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.revokedCount).toBe(2);
+
+      const sessions = await prisma.session.findMany({
+        where: { userId: user.id },
+      });
+
+      expect(sessions).toHaveLength(2);
+      expect(sessions.every((session) => session.revokedAt !== null)).toBe(
+        true,
+      );
+
+      // Both tokens must stop authenticating after revocation.
+      for (const token of [firstToken, secondToken]) {
+        const reuseResponse = await request(app)
+          .get("/auth/sessions")
+          .set("Authorization", `Bearer ${token}`);
+
+        expect(reuseResponse.status).toBe(401);
+      }
+    } finally {
+      await prisma.session.deleteMany({ where: { userId: user.id } });
+      await prisma.user.delete({ where: { id: user.id } });
+    }
+  });
+});

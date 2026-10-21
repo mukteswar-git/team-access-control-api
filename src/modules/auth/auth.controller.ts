@@ -6,6 +6,9 @@ import {
   requestPasswordReset,
   resetPassword,
   logoutSession,
+  listUserSessions,
+  revokeUserSession,
+  revokeAllUserSessions,
 } from "./auth.service.js";
 
 export async function register(
@@ -88,9 +91,9 @@ export async function resetPasswordController(
 
 export async function logout(req: Request, res: Response, next: NextFunction) {
   try {
-    const session = req.auth?.session;
+    const auth = req.auth;
 
-    if (!session) {
+    if (!auth) {
       res.status(401).json({
         error: {
           code: "UNAUTHENTICATED",
@@ -100,10 +103,104 @@ export async function logout(req: Request, res: Response, next: NextFunction) {
       return;
     }
 
-    await logoutSession(session.id);
+    await logoutSession(auth.user.id, auth.session.id);
 
     res.status(200).json({
       message: "Logout successful",
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function listSessions(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const auth = req.auth;
+
+    if (!auth) {
+      res.status(401).json({
+        error: {
+          code: "UNAUTHENTICATED",
+          message: "Authentication is required",
+        },
+      });
+      return;
+    }
+
+    const sessions = await listUserSessions(auth.user.id);
+
+    res.status(200).json({ sessions });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function revokeSession(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const auth = req.auth;
+
+    if (!auth) {
+      res.status(401).json({
+        error: {
+          code: "UNAUTHENTICATED",
+          message: "Authentication is required",
+        },
+      });
+      return;
+    }
+
+    const result = await revokeUserSession(
+      auth.user.id,
+      req.params.sessionId as string,
+    );
+
+    if (!result.revoked) {
+      res.status(404).json({
+        error: {
+          code: "SESSION_NOT_FOUND",
+          message: "Session not found or already revoked",
+        },
+      });
+      return;
+    }
+
+    res.status(200).json({ message: "Session revoked successfully" });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function revokeAllSessions(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const auth = req.auth;
+
+    if (!auth) {
+      res.status(401).json({
+        error: {
+          code: "UNAUTHENTICATED",
+          message: "Authentication is required",
+        },
+      });
+      return;
+    }
+
+    const result = await revokeAllUserSessions(auth.user.id);
+
+    res.status(200).json({
+      message: "All sessions revoked successfully",
+      revokedCount: result.revokedCount,
     });
   } catch (error) {
     next(error);
