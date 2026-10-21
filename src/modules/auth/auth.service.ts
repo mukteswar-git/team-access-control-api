@@ -28,10 +28,12 @@ import { PASSWORD_RESET_TOKEN_TTL_MS } from "../../constants/auth.js";
 import {
   consumePasswordResetToken,
   createPasswordResetToken,
+  deletePasswordResetToken,
   findPasswordResetTokenByHash,
 } from "../../repositories/password-reset-token.repository.js";
 import { sendEmail } from "../../lib/email.js";
 import { env } from "../../config/env.js";
+import { passwordSchema } from "./auth.schema.js";
 
 type RegisterUserData = {
   email: string;
@@ -282,24 +284,43 @@ export async function requestPasswordReset(email: string) {
 
   const resetUrl = `${env.FRONTEND_URL}/reset-password?token=${rawToken}`;
 
-  await sendEmail({
-    to: user.email,
-    subject: "Reset your password — Team Access Control",
-    html: `
-      <h1>Reset your password</h1>
-      <p>We received a request to reset your password.</p>
-      <p>
-        <a href="${resetUrl}">Reset password</a>
-      </p>
-      <p>This link expires in 30 minutes.</p>
-      <p>If you did not request this, you can ignore this email.</p>
-    `,
-  });
+  try {
+    await sendEmail({
+      to: user.email,
+      subject: "Reset your password — Team Access Control",
+      html: `
+        <h1>Reset your password</h1>
+        <p>We received a request to reset your password.</p>
+        <p>
+          <a href="${resetUrl}">Reset password</a>
+        </p>
+        <p>This link expires in 30 minutes.</p>
+        <p>If you did not request this, you can ignore this email.</p>
+      `,
+    });
+  } catch (error) {
+    try {
+      await deletePasswordResetToken(tokenHash);
+    } catch {
+      // Preserve the original email delivery error.
+    }
+
+    throw error;
+  }
 }
 
 export async function resetPassword(token: string, newPassword: string) {
-  if (!token || !newPassword) {
-    throw new AuthError("INVALID_INPUT", "Token and new password are required");
+  if (!token) {
+    throw new AuthError("INVALID_INPUT", "Reset token is required");
+  }
+
+  const passwordValidation = passwordSchema.safeParse(newPassword);
+
+  if (!passwordValidation.success) {
+    throw new AuthError(
+      "INVALID_INPUT",
+      "Password must be between 8 and 128 characters",
+    );
   }
 
   const tokenHash = createHash("sha256").update(token).digest("hex");

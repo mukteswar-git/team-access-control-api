@@ -45,3 +45,15 @@ export async function consumePasswordResetToken(
     },
   });
 }
+
+export function deletePasswordResetToken(
+  tokenHash: string,
+  db: DatabaseClient = prisma,
+) {
+  return db.passwordResetToken.deleteMany({
+    where: {
+      tokenHash,
+      usedAt: null,
+    },
+  });
+}
