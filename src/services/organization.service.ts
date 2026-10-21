@@ -7,6 +7,7 @@ import {
 } from "../repositories/organization.repository.js";
 import { hasPermission } from "./authorization.service.js";
 import { OrganizationError } from "./organization.errors.js";
+import { createAuditLog } from "./audit-log.service.js";
 
 export const createOrganizationSchema = z.object({
   name: z.string().trim().min(1, "Organization name is required"),
@@ -76,17 +77,15 @@ export async function createOrganizationForUser(
       },
     });
 
-    await tx.auditLog.create({
-      data: {
-        organizationId: organization.id,
-        actorUserId: user.id,
-        actorMembershipId: membership.id,
-        action: "organization.created",
-        result: "success",
-        targetType: "organization",
-        targetId: organization.id,
-        metadata: {},
-      },
+    await createAuditLog(tx, {
+      organizationId: organization.id,
+      actorUserId: user.id,
+      actorMembershipId: membership.id,
+      action: "organization.created",
+      result: "success",
+      targetType: "organization",
+      targetId: organization.id,
+      metadata: {},
     });
 
     return organization;
@@ -282,21 +281,19 @@ export async function transferOrganizationOwnership(
       data: { roleId: superUserRole.id },
     });
 
-    await tx.auditLog.create({
-      data: {
-        organizationId: parsedOrganizationId.data,
-        actorUserId: parsedUserId.data,
-        actorMembershipId: actor.id,
-        action: "organization.ownership_transferred",
-        result: "success",
-        targetType: "organization",
-        targetId: parsedOrganizationId.data,
-        metadata: {
-          previousOwnerMembershipId: actor.id,
-          previousOwnerUserId: actor.userId,
-          newOwnerMembershipId: target.id,
-          newOwnerUserId: target.userId,
-        },
+    await createAuditLog(tx, {
+      organizationId: parsedOrganizationId.data,
+      actorUserId: parsedUserId.data,
+      actorMembershipId: actor.id,
+      action: "organization.ownership_transferred",
+      result: "success",
+      targetType: "organization",
+      targetId: parsedOrganizationId.data,
+      metadata: {
+        previousOwnerMembershipId: actor.id,
+        previousOwnerUserId: actor.userId,
+        newOwnerMembershipId: target.id,
+        newOwnerUserId: target.userId,
       },
     });
 
