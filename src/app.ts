@@ -2,6 +2,7 @@ import express from "express";
 import helmet from "helmet";
 import authRoutes from "./modules/auth/auth.routes.js";
 import organizationRoutes from "./modules/organization/organization.routes.js";
+import invitationRoutes from "./modules/invitation/invitation.routes.js";
 import errorHandler from "./middleware/error-handler.js";
 
 const app = express();
@@ -15,6 +16,7 @@ app.get("/health", (_req, res) => {
 
 app.use("/auth", authRoutes);
 app.use("/organizations", organizationRoutes);
+app.use(invitationRoutes);
 
 app.use(errorHandler);
 

@@ -2,6 +2,7 @@ import type { ErrorRequestHandler } from "express";
 import { AuthError } from "../modules/auth/auth.errors.js";
 import { OrganizationError } from "../services/organization.errors.js";
 import { MembershipError } from "../services/membership.errors.js";
+import { InvitationError } from "../services/invitation.errors.js";
 
 const errorHandler: ErrorRequestHandler = (err, _req, res, _next) => {
   if (err instanceof OrganizationError) {
@@ -48,6 +49,31 @@ const errorHandler: ErrorRequestHandler = (err, _req, res, _next) => {
       INVALID_INPUT: 400,
       FORBIDDEN: 403,
       MEMBERSHIP_NOT_FOUND: 404,
+    };
+
+    res.status(statusCodes[err.code]).json({
+      error: {
+        code: err.code,
+        message: err.message,
+      },
+    });
+
+    return;
+  }
+
+  if (err instanceof InvitationError) {
+    const statusCodes: Record<InvitationError["code"], number> = {
+      INVALID_INPUT: 400,
+      FORBIDDEN: 403,
+      ORGANIZATION_NOT_FOUND: 404,
+      INVITATION_NOT_FOUND: 404,
+      INVALID_INVITATION_STATE: 409,
+      ROLE_NOT_FOUND: 404,
+      INVALID_ASSIGNMENT: 400,
+      PENDING_INVITATION_EXISTS: 409,
+      EMAIL_NOT_VERIFIED: 403,
+      EMAIL_MISMATCH: 403,
+      ALREADY_MEMBER: 409,
     };
 
     res.status(statusCodes[err.code]).json({
