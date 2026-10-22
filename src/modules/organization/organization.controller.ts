@@ -12,6 +12,9 @@ import {
   removeMembership,
   updateMembershipReportingAssignment,
 } from "../../services/membership.service.js";
+import { revokeAllUserSessions } from "../auth/auth.service.js";
+import { findMembershipByUserAndOrganization } from "../../repositories/membership.repository.js";
+import { canPerformMembershipAction } from "../../services/authorization.service.js";
 
 function getParam(value: string | string[] | undefined): string {
   if (typeof value !== "string") {
@@ -264,6 +267,65 @@ export async function removeMembershipController(
       getParam(req.params.organizationId),
       getParam(req.params.membershipId),
     );
+
+    res.status(200).json(result);
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function revokeUserSessionsController(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    if (!req.auth) {
+      res.status(401).json({
+        error: {
+          code: "UNAUTHENTICATED",
+          message: "Authentication is required",
+        },
+      });
+      return;
+    }
+
+    const organizationId = getParam(req.params.organizationId);
+    const userId = getParam(req.params.userId);
+
+    const targetMembership = await findMembershipByUserAndOrganization(
+      userId,
+      organizationId,
+    );
+
+    if (!targetMembership) {
+      res.status(404).json({
+        error: {
+          code: "MEMBERSHIP_NOT_FOUND",
+          message: "The target user is not a member of this organization",
+        },
+      });
+      return;
+    }
+
+    const permitted = await canPerformMembershipAction(
+      req.auth.user.id,
+      organizationId,
+      targetMembership.id,
+      "session.manage_any",
+    );
+
+    if (!permitted) {
+      res.status(403).json({
+        error: {
+          code: "FORBIDDEN",
+          message: "You are not authorized to perform this action",
+        },
+      });
+      return;
+    }
+
+    const result = await revokeAllUserSessions(userId);
 
     res.status(200).json(result);
   } catch (error) {

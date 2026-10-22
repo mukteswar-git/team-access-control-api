@@ -10,6 +10,11 @@ export const membershipParamsSchema = z.object({
   membershipId: z.string().uuid("Membership ID must be a valid UUID"),
 });
 
+export const organizationUserParamsSchema = z.object({
+  organizationId: z.string().uuid("Organization ID must be a valid UUID"),
+  userId: z.string().uuid("User ID must be a valid UUID"),
+});
+
 // Organization request bodies
 export const createOrganizationBodySchema = z.object({
   name: z.string().trim().min(1, "Organization name is required"),
