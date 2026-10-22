@@ -9,6 +9,7 @@ import {
   transferOwnershipBodySchema,
   changeMembershipRoleBodySchema,
   updateReportingAssignmentBodySchema,
+  organizationUserParamsSchema,
 } from "./organization.schema.js";
 import {
   createOrganization,
@@ -20,6 +21,7 @@ import {
   changeRole,
   updateReportingAssignment,
   removeMembershipController,
+  revokeUserSessionsController,
 } from "./organization.controller.js";
 
 const router = Router();
@@ -88,6 +90,13 @@ router.delete(
   requireAuth,
   validateParams(membershipParamsSchema),
   removeMembershipController,
+);
+
+router.delete(
+  "/:organizationId/users/:userId/sessions",
+  requireAuth,
+  validateParams(organizationUserParamsSchema),
+  revokeUserSessionsController,
 );
 
 export default router;

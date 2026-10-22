@@ -583,6 +583,39 @@ describe("GET /auth/sessions", () => {
 });
 
 describe("DELETE /auth/sessions/:sessionId", () => {
+  test("rejects an invalid session ID", async () => {
+    const email = `invalid-session-${randomUUID()}@example.com`;
+    const password = "Strong-test-password-123";
+
+    const user = await prisma.user.create({
+      data: {
+        email,
+        passwordHash: await argon2.hash(password, {
+          type: argon2.argon2id,
+        }),
+        emailVerifiedAt: new Date(),
+      },
+    });
+
+    try {
+      const loginResponse = await request(app)
+        .post("/auth/login")
+        .send({ email, password });
+
+      const token = loginResponse.body.sessionToken as string;
+
+      const response = await request(app)
+        .delete("/auth/sessions/invalid-id")
+        .set("Authorization", `Bearer ${token}`);
+
+      expect(response.status).toBe(400);
+      expect(response.body.error.code).toBe("VALIDATION_ERROR");
+    } finally {
+      await prisma.session.deleteMany({ where: { userId: user.id } });
+      await prisma.user.delete({ where: { id: user.id } });
+    }
+  });
+
   test("rejects a request without a token", async () => {
     const response = await request(app).delete(
       `/auth/sessions/${randomUUID()}`,
@@ -660,11 +693,16 @@ describe("DELETE /auth/sessions/:sessionId", () => {
     });
 
     try {
-      const loginResponse = await request(app)
-        .post("/auth/login")
-        .send({ email: firstEmail, password });
+      const sessionToken = randomUUID() + randomUUID();
 
-      const token = loginResponse.body.sessionToken as string;
+      await prisma.session.create({
+        data: {
+          userId: firstUser.id,
+          tokenHash: createHash("sha256").update(sessionToken).digest("hex"),
+          expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+        },
+      });
+
       const otherSession = await prisma.session.create({
         data: {
           userId: secondUser.id,
@@ -675,7 +713,7 @@ describe("DELETE /auth/sessions/:sessionId", () => {
 
       const response = await request(app)
         .delete(`/auth/sessions/${otherSession.id}`)
-        .set("Authorization", `Bearer ${token}`);
+        .set("Authorization", `Bearer ${sessionToken}`);
 
       expect(response.status).toBe(404);
       expect(response.body.error.code).toBe("SESSION_NOT_FOUND");
@@ -689,6 +727,7 @@ describe("DELETE /auth/sessions/:sessionId", () => {
       await prisma.session.deleteMany({
         where: { userId: { in: [firstUser.id, secondUser.id] } },
       });
+
       await prisma.user.deleteMany({
         where: { id: { in: [firstUser.id, secondUser.id] } },
       });
