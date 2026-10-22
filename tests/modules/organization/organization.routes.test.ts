@@ -1308,3 +1308,197 @@ describe("DELETE /organizations/:organizationId/memberships/:membershipId", () =
     }
   });
 });
+
+describe("DELETE /organizations/:organizationId/users/:userId/sessions", () => {
+  test("rejects a request without authentication", async () => {
+    const response = await request(app).delete(
+      `/organizations/${randomUUID()}/users/${randomUUID()}/sessions`,
+    );
+
+    expect(response.status).toBe(401);
+    expect(response.body.error.code).toBe("UNAUTHENTICATED");
+  });
+
+  test("rejects invalid organization and user UUIDs", async () => {
+    const { user, sessionToken } = await createAuthenticatedUser();
+
+    try {
+      const response = await request(app)
+        .delete("/organizations/not-a-uuid/users/not-a-uuid/sessions")
+        .set("Authorization", `Bearer ${sessionToken}`);
+
+      expect(response.status).toBe(400);
+      expect(response.body.error.code).toBe("VALIDATION_ERROR");
+    } finally {
+      await prisma.session.deleteMany({ where: { userId: user.id } });
+      await prisma.user.delete({ where: { id: user.id } });
+    }
+  });
+
+  test("allows a Super User to revoke a member's sessions", async () => {
+    const actor = await createAuthenticatedUser();
+    const target = await createAuthenticatedUser();
+    const organization = await prisma.organization.create({
+      data: { name: `Session revocation ${randomUUID()}` },
+    });
+
+    try {
+      await createMembership(organization.id, actor.user.id, "super_user");
+      await createMembership(organization.id, target.user.id, "member");
+
+      const targetSession = await prisma.session.create({
+        data: {
+          userId: target.user.id,
+          tokenHash: createHash("sha256")
+            .update(randomBytes(32).toString("hex"))
+            .digest("hex"),
+          expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+        },
+      });
+
+      const response = await request(app)
+        .delete(
+          `/organizations/${organization.id}/users/${target.user.id}/sessions`,
+        )
+        .set("Authorization", `Bearer ${actor.sessionToken}`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.revokedCount).toBeGreaterThanOrEqual(1);
+
+      const revokedSession = await prisma.session.findUnique({
+        where: { id: targetSession.id },
+      });
+
+      expect(revokedSession?.revokedAt).not.toBeNull();
+    } finally {
+      await prisma.session.deleteMany({
+        where: {
+          userId: { in: [actor.user.id, target.user.id] },
+        },
+      });
+
+      // Remove memberships and the organization before deleting users.
+      await cleanupOrganization(organization.id);
+
+      await prisma.user.deleteMany({
+        where: {
+          id: { in: [actor.user.id, target.user.id] },
+        },
+      });
+    }
+  });
+
+  test("rejects an actor without session.manage_any permission", async () => {
+    const actor = await createAuthenticatedUser();
+    const target = await createAuthenticatedUser();
+    const organization = await prisma.organization.create({
+      data: { name: `Session permission ${randomUUID()}` },
+    });
+
+    try {
+      await createMembership(organization.id, actor.user.id, "member");
+      await createMembership(organization.id, target.user.id, "member");
+
+      const response = await request(app)
+        .delete(
+          `/organizations/${organization.id}/users/${target.user.id}/sessions`,
+        )
+        .set("Authorization", `Bearer ${actor.sessionToken}`);
+
+      expect(response.status).toBe(403);
+      expect(response.body.error.code).toBe("FORBIDDEN");
+    } finally {
+      await prisma.session.deleteMany({
+        where: { userId: { in: [actor.user.id, target.user.id] } },
+      });
+
+      await cleanupOrganization(organization.id);
+
+      await prisma.user.deleteMany({
+        where: { id: { in: [actor.user.id, target.user.id] } },
+      });
+    }
+  });
+
+  test("rejects an Admin revoking sessions for a Manager outside their scope", async () => {
+    const actorAdmin = await createAuthenticatedUser();
+    const otherAdmin = await createAuthenticatedUser();
+    const targetManager = await createAuthenticatedUser();
+
+    const organization = await prisma.organization.create({
+      data: { name: `Session scope ${randomUUID()}` },
+    });
+
+    try {
+      const actorAdminMembership = await createMembership(
+        organization.id,
+        actorAdmin.user.id,
+        "admin",
+      );
+
+      const otherAdminMembership = await createMembership(
+        organization.id,
+        otherAdmin.user.id,
+        "admin",
+      );
+
+      await createMembership(
+        organization.id,
+        targetManager.user.id,
+        "manager",
+        { adminMembershipId: otherAdminMembership.id },
+      );
+
+      const targetSession = await prisma.session.create({
+        data: {
+          userId: targetManager.user.id,
+          tokenHash: createHash("sha256")
+            .update(randomUUID())
+            .digest("hex"),
+          expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+        },
+      });
+
+      const response = await request(app)
+        .delete(
+          `/organizations/${organization.id}/users/${targetManager.user.id}/sessions`,
+        )
+        .set("Authorization", `Bearer ${actorAdmin.sessionToken}`);
+
+      expect(response.status).toBe(403);
+      expect(response.body.error.code).toBe("FORBIDDEN");
+
+      const unchangedSession = await prisma.session.findUniqueOrThrow({
+        where: { id: targetSession.id },
+      });
+
+      expect(unchangedSession.revokedAt).toBeNull();
+    } finally {
+      await cleanupOrganization(organization.id);
+
+      await prisma.session.deleteMany({
+        where: {
+          userId: {
+            in: [
+              actorAdmin.user.id,
+              otherAdmin.user.id,
+              targetManager.user.id,
+            ],
+          },
+        },
+      });
+
+      await prisma.user.deleteMany({
+        where: {
+          id: {
+            in: [
+              actorAdmin.user.id,
+              otherAdmin.user.id,
+              targetManager.user.id,
+            ],
+          },
+        },
+      });
+    }
+  });
+});
