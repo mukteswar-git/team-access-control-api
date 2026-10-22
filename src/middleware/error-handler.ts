@@ -1,6 +1,7 @@
 import type { ErrorRequestHandler } from "express";
 import { AuthError } from "../modules/auth/auth.errors.js";
 import { OrganizationError } from "../services/organization.errors.js";
+import { MembershipError } from "../services/membership.errors.js";
 
 const errorHandler: ErrorRequestHandler = (err, _req, res, _next) => {
   if (err instanceof OrganizationError) {
@@ -30,6 +31,23 @@ const errorHandler: ErrorRequestHandler = (err, _req, res, _next) => {
       EMAIL_NOT_VERIFIED: 403,
       INVALID_OR_EXPIRED_TOKEN: 400,
       INVALID_INPUT: 400,
+    };
+
+    res.status(statusCodes[err.code]).json({
+      error: {
+        code: err.code,
+        message: err.message,
+      },
+    });
+
+    return;
+  }
+
+  if (err instanceof MembershipError) {
+    const statusCodes: Record<MembershipError["code"], number> = {
+      INVALID_INPUT: 400,
+      FORBIDDEN: 403,
+      MEMBERSHIP_NOT_FOUND: 404,
     };
 
     res.status(statusCodes[err.code]).json({

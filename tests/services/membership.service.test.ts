@@ -821,7 +821,7 @@ describe("Membership service", () => {
     expect(unchanged.managerMembershipId).toBe(managerBMembership.id);
   });
 
-  it("allows an Admin to move an assigned Manager to another Admin and audits the change", async () => {
+  it("denies an Admin from moving a Manager to another Admin", async () => {
     const organization = await createTestOrganization();
 
     const adminAUser = await createTestUser();
@@ -847,30 +847,36 @@ describe("Membership service", () => {
       { adminMembershipId: adminA.id },
     );
 
-    await updateMembershipReportingAssignment(
-      adminAUser.id,
-      organization.id,
-      manager.id,
-      {
-        role: "manager",
-        adminMembershipId: adminB.id,
-      },
+    await expect(
+      updateMembershipReportingAssignment(
+        adminAUser.id,
+        organization.id,
+        manager.id,
+        {
+          role: "manager",
+          adminMembershipId: adminB.id,
+        },
+        prisma,
+      ),
+    ).rejects.toThrow(
+      "Admins cannot change a Manager's administrative ownership.",
     );
 
-    const updatedManager = await prisma.membership.findUniqueOrThrow({
+    const unchangedManager = await prisma.membership.findUniqueOrThrow({
       where: { id: manager.id },
     });
 
-    expect(updatedManager.adminMembershipId).toBe(adminB.id);
+    expect(unchangedManager.adminMembershipId).toBe(adminA.id);
 
     const auditLog = await prisma.auditLog.findFirst({
       where: {
+        organizationId: organization.id,
         action: "membership.reporting_assignment_changed",
         targetId: manager.id,
       },
     });
 
-    expect(auditLog).not.toBeNull();
+    expect(auditLog).toBeNull();
   });
 
   test("allows a Super User to remove a Member and records an audit log", async () => {

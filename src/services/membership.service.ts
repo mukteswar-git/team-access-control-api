@@ -154,7 +154,10 @@ export async function changeMembershipRole(
     });
 
     if (!target) {
-      throw new Error("Membership not found.");
+      throw new MembershipError(
+        "MEMBERSHIP_NOT_FOUND",
+        "Membership not found.",
+      );
     }
 
     const newRole = await tx.role.findUnique({
@@ -164,7 +167,7 @@ export async function changeMembershipRole(
     });
 
     if (!newRole) {
-      throw new Error("Invalid role.");
+      throw new MembershipError("INVALID_INPUT", "Invalid role.");
     }
 
     const allowed = await canChangeMembershipRole(
@@ -176,7 +179,10 @@ export async function changeMembershipRole(
     );
 
     if (!allowed) {
-      throw new Error("Not authorized to change this membership's role.");
+      throw new MembershipError(
+        "FORBIDDEN",
+        "Not authorized to change this membership's role.",
+      );
     }
 
     const previousRoleCode = target.role.code;
@@ -387,8 +393,17 @@ export async function updateMembershipReportingAssignment(
     // The authorization helper validates the target's current scope.
     // Validate the destination separately so an actor cannot move a target
     // into a scope they are not allowed to administer.
-    if (referenceId !== null && actor.role.code === "admin") {
-      if (!isManagerAssignment) {
+    if (actor.role.code === "admin") {
+      if (isManagerAssignment) {
+        // Admins cannot change a Manager's administrative ownership,
+        // including removing their own assignment.
+        if (referenceId !== actor.id) {
+          throw new MembershipError(
+            "FORBIDDEN",
+            "Admins cannot change a Manager's administrative ownership.",
+          );
+        }
+      } else if (referenceId !== null) {
         // Members may be assigned only to Managers within this Admin's scope.
         const destinationManager = await tx.membership.findFirst({
           where: {
