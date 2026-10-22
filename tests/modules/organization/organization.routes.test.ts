@@ -907,281 +907,272 @@ describe("PATCH /organizations/:organizationId/memberships/:membershipId/role", 
   });
 });
 
-describe(
-  "PATCH /organizations/:organizationId/memberships/:membershipId/reporting-assignment",
-  () => {
-    test("allows the Super User to assign a Manager to an Admin", async () => {
-      const owner = await createAuthenticatedUser();
-      const adminUser = await createAuthenticatedUser();
-      const managerUser = await createAuthenticatedUser();
-      let organizationId: string | undefined;
+describe("PATCH /organizations/:organizationId/memberships/:membershipId/reporting-assignment", () => {
+  test("allows the Super User to assign a Manager to an Admin", async () => {
+    const owner = await createAuthenticatedUser();
+    const adminUser = await createAuthenticatedUser();
+    const managerUser = await createAuthenticatedUser();
+    let organizationId: string | undefined;
 
-      try {
-        const createResponse = await request(app)
-          .post("/organizations")
-          .set("Authorization", `Bearer ${owner.sessionToken}`)
-          .send({ name: `Reporting test ${randomUUID()}` });
+    try {
+      const createResponse = await request(app)
+        .post("/organizations")
+        .set("Authorization", `Bearer ${owner.sessionToken}`)
+        .send({ name: `Reporting test ${randomUUID()}` });
 
-        expect(createResponse.status).toBe(201);
-        organizationId = createResponse.body.organization.id;
+      expect(createResponse.status).toBe(201);
+      organizationId = createResponse.body.organization.id;
 
-        if (typeof organizationId !== "string") {
-          throw new Error("Expected the organization ID to be a string");
-        }
+      if (typeof organizationId !== "string") {
+        throw new Error("Expected the organization ID to be a string");
+      }
 
-        const adminMembership = await createMembership(
-          organizationId,
-          adminUser.user.id,
-          "admin",
-        );
+      const adminMembership = await createMembership(
+        organizationId,
+        adminUser.user.id,
+        "admin",
+      );
 
-        const managerMembership = await createMembership(
-          organizationId,
-          managerUser.user.id,
-          "manager",
-        );
+      const managerMembership = await createMembership(
+        organizationId,
+        managerUser.user.id,
+        "manager",
+      );
 
-        const response = await request(app)
-          .patch(
-            `/organizations/${organizationId}/memberships/${managerMembership.id}/reporting-assignment`,
-          )
-          .set("Authorization", `Bearer ${owner.sessionToken}`)
-          .send({
-            role: "manager",
-            adminMembershipId: adminMembership.id,
-          });
-
-        expect(response.status).toBe(200);
-        expect(response.body).toMatchObject({
-          membershipId: managerMembership.id,
+      const response = await request(app)
+        .patch(
+          `/organizations/${organizationId}/memberships/${managerMembership.id}/reporting-assignment`,
+        )
+        .set("Authorization", `Bearer ${owner.sessionToken}`)
+        .send({
           role: "manager",
           adminMembershipId: adminMembership.id,
-          managerMembershipId: null,
         });
 
-        const updatedMembership = await prisma.membership.findUnique({
-          where: { id: managerMembership.id },
-        });
+      expect(response.status).toBe(200);
+      expect(response.body).toMatchObject({
+        membershipId: managerMembership.id,
+        role: "manager",
+        adminMembershipId: adminMembership.id,
+        managerMembershipId: null,
+      });
 
-        expect(updatedMembership?.adminMembershipId).toBe(
-          adminMembership.id,
-        );
-      } finally {
-        if (organizationId) {
-          await cleanupOrganization(organizationId);
-        }
+      const updatedMembership = await prisma.membership.findUnique({
+        where: { id: managerMembership.id },
+      });
 
-        const userIds = [
-          owner.user.id,
-          adminUser.user.id,
-          managerUser.user.id,
-        ];
-
-        await prisma.session.deleteMany({
-          where: { userId: { in: userIds } },
-        });
-        await prisma.user.deleteMany({
-          where: { id: { in: userIds } },
-        });
+      expect(updatedMembership?.adminMembershipId).toBe(adminMembership.id);
+    } finally {
+      if (organizationId) {
+        await cleanupOrganization(organizationId);
       }
-    });
 
-    test("denies an Admin from moving a Manager to another Admin", async () => {
-      const owner = await createAuthenticatedUser();
-      const adminAUser = await createAuthenticatedUser();
-      const adminBUser = await createAuthenticatedUser();
-      const managerUser = await createAuthenticatedUser();
-      let organizationId: string | undefined;
+      const userIds = [owner.user.id, adminUser.user.id, managerUser.user.id];
 
-      try {
-        const createResponse = await request(app)
-          .post("/organizations")
-          .set("Authorization", `Bearer ${owner.sessionToken}`)
-          .send({ name: `Reporting test ${randomUUID()}` });
+      await prisma.session.deleteMany({
+        where: { userId: { in: userIds } },
+      });
+      await prisma.user.deleteMany({
+        where: { id: { in: userIds } },
+      });
+    }
+  });
 
-        expect(createResponse.status).toBe(201);
-        organizationId = createResponse.body.organization.id;
+  test("denies an Admin from moving a Manager to another Admin", async () => {
+    const owner = await createAuthenticatedUser();
+    const adminAUser = await createAuthenticatedUser();
+    const adminBUser = await createAuthenticatedUser();
+    const managerUser = await createAuthenticatedUser();
+    let organizationId: string | undefined;
 
-        if (typeof organizationId !== "string") {
-          throw new Error("Expected the organization ID to be a string");
-        }
+    try {
+      const createResponse = await request(app)
+        .post("/organizations")
+        .set("Authorization", `Bearer ${owner.sessionToken}`)
+        .send({ name: `Reporting test ${randomUUID()}` });
 
-        const adminA = await createMembership(
-          organizationId,
-          adminAUser.user.id,
-          "admin",
-        );
+      expect(createResponse.status).toBe(201);
+      organizationId = createResponse.body.organization.id;
 
-        const adminB = await createMembership(
-          organizationId,
-          adminBUser.user.id,
-          "admin",
-        );
+      if (typeof organizationId !== "string") {
+        throw new Error("Expected the organization ID to be a string");
+      }
 
-        const manager = await createMembership(
-          organizationId,
-          managerUser.user.id,
-          "manager",
-          { adminMembershipId: adminA.id },
-        );
+      const adminA = await createMembership(
+        organizationId,
+        adminAUser.user.id,
+        "admin",
+      );
 
-        const response = await request(app)
-          .patch(
-            `/organizations/${organizationId}/memberships/${manager.id}/reporting-assignment`,
-          )
-          .set("Authorization", `Bearer ${adminAUser.sessionToken}`)
-          .send({
-            role: "manager",
-            adminMembershipId: adminB.id,
-          });
+      const adminB = await createMembership(
+        organizationId,
+        adminBUser.user.id,
+        "admin",
+      );
 
-        expect(response.status).toBe(403);
-        expect(response.body.error.code).toBe("FORBIDDEN");
+      const manager = await createMembership(
+        organizationId,
+        managerUser.user.id,
+        "manager",
+        { adminMembershipId: adminA.id },
+      );
 
-        const unchangedManager = await prisma.membership.findUniqueOrThrow({
-          where: { id: manager.id },
+      const response = await request(app)
+        .patch(
+          `/organizations/${organizationId}/memberships/${manager.id}/reporting-assignment`,
+        )
+        .set("Authorization", `Bearer ${adminAUser.sessionToken}`)
+        .send({
+          role: "manager",
+          adminMembershipId: adminB.id,
         });
 
-        expect(unchangedManager.adminMembershipId).toBe(adminA.id);
+      expect(response.status).toBe(403);
+      expect(response.body.error.code).toBe("FORBIDDEN");
 
-        const auditLog = await prisma.auditLog.findFirst({
-          where: {
+      const unchangedManager = await prisma.membership.findUniqueOrThrow({
+        where: { id: manager.id },
+      });
+
+      expect(unchangedManager.adminMembershipId).toBe(adminA.id);
+
+      const auditLog = await prisma.auditLog.findFirst({
+        where: {
+          organizationId,
+          action: "membership.reporting_assignment_changed",
+          targetId: manager.id,
+        },
+      });
+
+      expect(auditLog).toBeNull();
+    } finally {
+      if (organizationId) {
+        await cleanupOrganization(organizationId);
+      }
+
+      const userIds = [
+        owner.user.id,
+        adminAUser.user.id,
+        adminBUser.user.id,
+        managerUser.user.id,
+      ];
+
+      await prisma.session.deleteMany({
+        where: { userId: { in: userIds } },
+      });
+      await prisma.user.deleteMany({
+        where: { id: { in: userIds } },
+      });
+    }
+  });
+
+  test("rejects an invalid reporting-assignment body", async () => {
+    const owner = await createAuthenticatedUser();
+    let organizationId: string | undefined;
+
+    try {
+      const createResponse = await request(app)
+        .post("/organizations")
+        .set("Authorization", `Bearer ${owner.sessionToken}`)
+        .send({ name: `Reporting test ${randomUUID()}` });
+
+      expect(createResponse.status).toBe(201);
+      organizationId = createResponse.body.organization.id;
+
+      if (typeof organizationId !== "string") {
+        throw new Error("Expected the organization ID to be a string");
+      }
+
+      const membership = await prisma.membership.findUniqueOrThrow({
+        where: {
+          userId_organizationId: {
+            userId: owner.user.id,
             organizationId,
-            action: "membership.reporting_assignment_changed",
-            targetId: manager.id,
           },
+        },
+      });
+
+      const response = await request(app)
+        .patch(
+          `/organizations/${organizationId}/memberships/${membership.id}/reporting-assignment`,
+        )
+        .set("Authorization", `Bearer ${owner.sessionToken}`)
+        .send({
+          role: "invalid_role",
+          adminMembershipId: null,
         });
 
-        expect(auditLog).toBeNull();
-      } finally {
-        if (organizationId) {
-          await cleanupOrganization(organizationId);
-        }
-
-        const userIds = [
-          owner.user.id,
-          adminAUser.user.id,
-          adminBUser.user.id,
-          managerUser.user.id,
-        ];
-
-        await prisma.session.deleteMany({
-          where: { userId: { in: userIds } },
-        });
-        await prisma.user.deleteMany({
-          where: { id: { in: userIds } },
-        });
+      expect(response.status).toBe(400);
+      expect(response.body.error.code).toBe("VALIDATION_ERROR");
+    } finally {
+      if (organizationId) {
+        await cleanupOrganization(organizationId);
       }
-    });
 
-    test("rejects an invalid reporting-assignment body", async () => {
-      const owner = await createAuthenticatedUser();
-      let organizationId: string | undefined;
+      await prisma.session.deleteMany({
+        where: { userId: owner.user.id },
+      });
+      await prisma.user.delete({
+        where: { id: owner.user.id },
+      });
+    }
+  });
 
-      try {
-        const createResponse = await request(app)
-          .post("/organizations")
-          .set("Authorization", `Bearer ${owner.sessionToken}`)
-          .send({ name: `Reporting test ${randomUUID()}` });
+  test("denies a user without organization membership", async () => {
+    const owner = await createAuthenticatedUser();
+    const outsider = await createAuthenticatedUser();
+    let organizationId: string | undefined;
 
-        expect(createResponse.status).toBe(201);
-        organizationId = createResponse.body.organization.id;
+    try {
+      const createResponse = await request(app)
+        .post("/organizations")
+        .set("Authorization", `Bearer ${owner.sessionToken}`)
+        .send({ name: `Reporting test ${randomUUID()}` });
 
-        if (typeof organizationId !== "string") {
-          throw new Error("Expected the organization ID to be a string");
-        }
+      expect(createResponse.status).toBe(201);
+      organizationId = createResponse.body.organization.id;
 
-        const membership = await prisma.membership.findUniqueOrThrow({
-          where: {
-            userId_organizationId: {
-              userId: owner.user.id,
-              organizationId,
-            },
+      if (typeof organizationId !== "string") {
+        throw new Error("Expected the organization ID to be a string");
+      }
+
+      const membership = await prisma.membership.findUniqueOrThrow({
+        where: {
+          userId_organizationId: {
+            userId: owner.user.id,
+            organizationId,
           },
+        },
+      });
+
+      const response = await request(app)
+        .patch(
+          `/organizations/${organizationId}/memberships/${membership.id}/reporting-assignment`,
+        )
+        .set("Authorization", `Bearer ${outsider.sessionToken}`)
+        .send({
+          role: "manager",
+          adminMembershipId: null,
         });
 
-        const response = await request(app)
-          .patch(
-            `/organizations/${organizationId}/memberships/${membership.id}/reporting-assignment`,
-          )
-          .set("Authorization", `Bearer ${owner.sessionToken}`)
-          .send({
-            role: "invalid_role",
-            adminMembershipId: null,
-          });
-
-        expect(response.status).toBe(400);
-        expect(response.body.error.code).toBe("VALIDATION_ERROR");
-      } finally {
-        if (organizationId) {
-          await cleanupOrganization(organizationId);
-        }
-
-        await prisma.session.deleteMany({
-          where: { userId: owner.user.id },
-        });
-        await prisma.user.delete({
-          where: { id: owner.user.id },
-        });
+      expect(response.status).toBe(403);
+      expect(response.body.error.code).toBe("FORBIDDEN");
+    } finally {
+      if (organizationId) {
+        await cleanupOrganization(organizationId);
       }
-    });
 
-    test("denies a user without organization membership", async () => {
-      const owner = await createAuthenticatedUser();
-      const outsider = await createAuthenticatedUser();
-      let organizationId: string | undefined;
+      const userIds = [owner.user.id, outsider.user.id];
 
-      try {
-        const createResponse = await request(app)
-          .post("/organizations")
-          .set("Authorization", `Bearer ${owner.sessionToken}`)
-          .send({ name: `Reporting test ${randomUUID()}` });
-
-        expect(createResponse.status).toBe(201);
-        organizationId = createResponse.body.organization.id;
-
-        if (typeof organizationId !== "string") {
-          throw new Error("Expected the organization ID to be a string");
-        }
-
-        const membership = await prisma.membership.findUniqueOrThrow({
-          where: {
-            userId_organizationId: {
-              userId: owner.user.id,
-              organizationId,
-            },
-          },
-        });
-
-        const response = await request(app)
-          .patch(
-            `/organizations/${organizationId}/memberships/${membership.id}/reporting-assignment`,
-          )
-          .set("Authorization", `Bearer ${outsider.sessionToken}`)
-          .send({
-            role: "manager",
-            adminMembershipId: null,
-          });
-
-        expect(response.status).toBe(403);
-        expect(response.body.error.code).toBe("FORBIDDEN");
-      } finally {
-        if (organizationId) {
-          await cleanupOrganization(organizationId);
-        }
-
-        const userIds = [owner.user.id, outsider.user.id];
-
-        await prisma.session.deleteMany({
-          where: { userId: { in: userIds } },
-        });
-        await prisma.user.deleteMany({
-          where: { id: { in: userIds } },
-        });
-      }
-    });
-  },
-);
+      await prisma.session.deleteMany({
+        where: { userId: { in: userIds } },
+      });
+      await prisma.user.deleteMany({
+        where: { id: { in: userIds } },
+      });
+    }
+  });
+});
 
 describe("DELETE /organizations/:organizationId/memberships/:membershipId", () => {
   test("DELETE /organizations/:organizationId/memberships/:membershipId removes a membership", async () => {
