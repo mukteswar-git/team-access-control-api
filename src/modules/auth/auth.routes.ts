@@ -11,6 +11,7 @@ import {
   verifyEmailSchema,
   requestPasswordResetSchema,
   resetPasswordSchema,
+  sessionIdParamsSchema,
 } from "./auth.schema.js";
 import {
   register,
@@ -24,6 +25,7 @@ import {
   revokeAllSessions,
 } from "./auth.controller.js";
 import { requireAuth } from "../../middleware/require-auth.js";
+import validateParams from "../../middleware/validate-params.js";
 
 const router = Router();
 
@@ -48,6 +50,11 @@ router.post(
 router.post("/logout", requireAuth, logout);
 router.get("/sessions", requireAuth, listSessions);
 router.delete("/sessions", requireAuth, revokeAllSessions);
-router.delete("/sessions/:sessionId", requireAuth, revokeSession);
+router.delete(
+  "/sessions/:sessionId",
+  requireAuth,
+  validateParams(sessionIdParamsSchema),
+  revokeSession,
+);
 
 export default router;

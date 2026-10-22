@@ -27,3 +27,7 @@ export const resetPasswordSchema = z.object({
   token: z.string().min(1),
   newPassword: passwordSchema,
 });
+
+export const sessionIdParamsSchema = z.object({
+  sessionId: z.string().uuid(),
+});
