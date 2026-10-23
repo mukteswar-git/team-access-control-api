@@ -10,6 +10,7 @@ import {
   changeMembershipRoleBodySchema,
   updateReportingAssignmentBodySchema,
   organizationUserParamsSchema,
+  organizationAuditLogQuerySchema,
 } from "./organization.schema.js";
 import {
   createOrganization,
@@ -22,7 +23,9 @@ import {
   updateReportingAssignment,
   removeMembershipController,
   revokeUserSessionsController,
+  getOrganizationAuditLogsController,
 } from "./organization.controller.js";
+import validateQuery from "../../middleware/validate-query.js";
 
 const router = Router();
 
@@ -67,6 +70,14 @@ router.get(
   requireAuth,
   validateParams(organizationIdParamsSchema),
   getOrganizationStructureController,
+);
+
+router.get(
+  "/:organizationId/audit-logs",
+  requireAuth,
+  validateParams(organizationIdParamsSchema),
+  validateQuery(organizationAuditLogQuerySchema),
+  getOrganizationAuditLogsController,
 );
 
 router.patch(

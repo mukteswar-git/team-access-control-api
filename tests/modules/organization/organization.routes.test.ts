@@ -1452,9 +1452,7 @@ describe("DELETE /organizations/:organizationId/users/:userId/sessions", () => {
       const targetSession = await prisma.session.create({
         data: {
           userId: targetManager.user.id,
-          tokenHash: createHash("sha256")
-            .update(randomUUID())
-            .digest("hex"),
+          tokenHash: createHash("sha256").update(randomUUID()).digest("hex"),
           expiresAt: new Date(Date.now() + 60 * 60 * 1000),
         },
       });
@@ -1479,11 +1477,7 @@ describe("DELETE /organizations/:organizationId/users/:userId/sessions", () => {
       await prisma.session.deleteMany({
         where: {
           userId: {
-            in: [
-              actorAdmin.user.id,
-              otherAdmin.user.id,
-              targetManager.user.id,
-            ],
+            in: [actorAdmin.user.id, otherAdmin.user.id, targetManager.user.id],
           },
         },
       });
@@ -1491,14 +1485,278 @@ describe("DELETE /organizations/:organizationId/users/:userId/sessions", () => {
       await prisma.user.deleteMany({
         where: {
           id: {
-            in: [
-              actorAdmin.user.id,
-              otherAdmin.user.id,
-              targetManager.user.id,
-            ],
+            in: [actorAdmin.user.id, otherAdmin.user.id, targetManager.user.id],
           },
         },
       });
+    }
+  });
+});
+
+describe("GET /organizations/:organizationId/audit-logs", () => {
+  test("rejects a request without authentication", async () => {
+    const response = await request(app).get(
+      `/organizations/${randomUUID()}/audit-logs`,
+    );
+
+    expect(response.status).toBe(401);
+    expect(response.body.error.code).toBe("UNAUTHENTICATED");
+  });
+
+  test("allows a Super User to retrieve organization audit logs", async () => {
+    const { user, sessionToken } = await createAuthenticatedUser();
+    let organizationId: string | undefined;
+
+    try {
+      const createResponse = await request(app)
+        .post("/organizations")
+        .set("Authorization", `Bearer ${sessionToken}`)
+        .send({ name: `Audit test ${randomUUID()}` });
+
+      expect(createResponse.status).toBe(201);
+      organizationId = createResponse.body.organization.id;
+
+      const response = await request(app)
+        .get(`/organizations/${organizationId}/audit-logs`)
+        .set("Authorization", `Bearer ${sessionToken}`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.auditLogs).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            organizationId,
+            actorUserId: user.id,
+            action: "organization.created",
+          }),
+        ]),
+      );
+      expect(response.body.pagination).toEqual({
+        page: 1,
+        pageSize: 20,
+        total: expect.any(Number),
+        totalPages: expect.any(Number),
+      });
+
+      expect(response.body.auditLogs[0]).not.toHaveProperty("metadata");
+    } finally {
+      if (organizationId) {
+        await cleanupOrganization(organizationId);
+      }
+
+      await prisma.session.deleteMany({ where: { userId: user.id } });
+      await prisma.user.delete({ where: { id: user.id } });
+    }
+  });
+
+  test("rejects a regular member without audit_log.read permission", async () => {
+    const owner = await createAuthenticatedUser();
+    const member = await createAuthenticatedUser();
+    let organizationId: string | undefined;
+
+    try {
+      const createResponse = await request(app)
+        .post("/organizations")
+        .set("Authorization", `Bearer ${owner.sessionToken}`)
+        .send({ name: `Audit permission test ${randomUUID()}` });
+
+      expect(createResponse.status).toBe(201);
+      organizationId = createResponse.body.organization.id;
+
+      if (typeof organizationId !== "string") {
+        throw new Error("Expected the organization ID to be a string");
+      }
+
+      await createMembership(organizationId, member.user.id, "member");
+
+      const response = await request(app)
+        .get(`/organizations/${organizationId}/audit-logs`)
+        .set("Authorization", `Bearer ${member.sessionToken}`);
+
+      expect(response.status).toBe(403);
+    } finally {
+      if (organizationId) {
+        await cleanupOrganization(organizationId);
+      }
+
+      for (const account of [owner, member]) {
+        await prisma.session.deleteMany({
+          where: { userId: account.user.id },
+        });
+        await prisma.user.delete({
+          where: { id: account.user.id },
+        });
+      }
+    }
+  });
+
+  test("rejects an invalid organization UUID", async () => {
+    const { user, sessionToken } = await createAuthenticatedUser();
+
+    try {
+      const response = await request(app)
+        .get("/organizations/not-a-uuid/audit-logs")
+        .set("Authorization", `Bearer ${sessionToken}`);
+
+      expect(response.status).toBe(400);
+      expect(response.body.error.code).toBe("VALIDATION_ERROR");
+    } finally {
+      await prisma.session.deleteMany({ where: { userId: user.id } });
+      await prisma.user.delete({ where: { id: user.id } });
+    }
+  });
+
+  test("rejects invalid pagination parameters", async () => {
+    const { user, sessionToken } = await createAuthenticatedUser();
+    let organizationId: string | undefined;
+
+    try {
+      const createResponse = await request(app)
+        .post("/organizations")
+        .set("Authorization", `Bearer ${sessionToken}`)
+        .send({ name: `Audit pagination ${randomUUID()}` });
+
+      expect(createResponse.status).toBe(201);
+      organizationId = createResponse.body.organization.id;
+
+      const response = await request(app)
+        .get(`/organizations/${organizationId}/audit-logs?page=0&pageSize=101`)
+        .set("Authorization", `Bearer ${sessionToken}`);
+
+      expect(response.status).toBe(400);
+      expect(response.body.error.code).toBe("VALIDATION_ERROR");
+    } finally {
+      if (organizationId) await cleanupOrganization(organizationId);
+      await prisma.session.deleteMany({ where: { userId: user.id } });
+      await prisma.user.delete({ where: { id: user.id } });
+    }
+  });
+
+  test("rejects unsupported query parameters", async () => {
+    const { user, sessionToken } = await createAuthenticatedUser();
+    let organizationId: string | undefined;
+
+    try {
+      const createResponse = await request(app)
+        .post("/organizations")
+        .set("Authorization", `Bearer ${sessionToken}`)
+        .send({ name: `Audit filter ${randomUUID()}` });
+
+      expect(createResponse.status).toBe(201);
+      organizationId = createResponse.body.organization.id;
+
+      const response = await request(app)
+        .get(`/organizations/${organizationId}/audit-logs?unknownFilter=value`)
+        .set("Authorization", `Bearer ${sessionToken}`);
+
+      expect(response.status).toBe(400);
+      expect(response.body.error.code).toBe("VALIDATION_ERROR");
+    } finally {
+      if (organizationId) await cleanupOrganization(organizationId);
+      await prisma.session.deleteMany({ where: { userId: user.id } });
+      await prisma.user.delete({ where: { id: user.id } });
+    }
+  });
+
+  test("does not expose audit logs from another organization", async () => {
+    const firstOwner = await createAuthenticatedUser();
+    const secondOwner = await createAuthenticatedUser();
+    let firstOrganizationId: string | undefined;
+    let secondOrganizationId: string | undefined;
+
+    try {
+      const firstCreate = await request(app)
+        .post("/organizations")
+        .set("Authorization", `Bearer ${firstOwner.sessionToken}`)
+        .send({ name: `First audit org ${randomUUID()}` });
+
+      const secondCreate = await request(app)
+        .post("/organizations")
+        .set("Authorization", `Bearer ${secondOwner.sessionToken}`)
+        .send({ name: `Second audit org ${randomUUID()}` });
+
+      expect(firstCreate.status).toBe(201);
+      expect(secondCreate.status).toBe(201);
+
+      firstOrganizationId = firstCreate.body.organization.id;
+      secondOrganizationId = secondCreate.body.organization.id;
+
+      if (
+        typeof firstOrganizationId !== "string" ||
+        typeof secondOrganizationId !== "string"
+      ) {
+        throw new Error("Expected both organization IDs to be strings");
+      }
+
+      const response = await request(app)
+        .get(`/organizations/${firstOrganizationId}/audit-logs`)
+        .set("Authorization", `Bearer ${firstOwner.sessionToken}`);
+
+      expect(response.status).toBe(200);
+      expect(
+        response.body.auditLogs.every(
+          (log: { organizationId: string }) =>
+            log.organizationId === firstOrganizationId,
+        ),
+      ).toBe(true);
+
+      expect(
+        response.body.auditLogs.some(
+          (log: { organizationId: string }) =>
+            log.organizationId === secondOrganizationId,
+        ),
+      ).toBe(false);
+    } finally {
+      if (firstOrganizationId) {
+        await cleanupOrganization(firstOrganizationId);
+      }
+      if (secondOrganizationId) {
+        await cleanupOrganization(secondOrganizationId);
+      }
+
+      for (const account of [firstOwner, secondOwner]) {
+        await prisma.session.deleteMany({
+          where: { userId: account.user.id },
+        });
+        await prisma.user.delete({
+          where: { id: account.user.id },
+        });
+      }
+    }
+  });
+
+  test("returns empty results when no audit logs match the filter", async () => {
+    const { user, sessionToken } = await createAuthenticatedUser();
+    let organizationId: string | undefined;
+
+    try {
+      const createResponse = await request(app)
+        .post("/organizations")
+        .set("Authorization", `Bearer ${sessionToken}`)
+        .send({ name: `Empty audit result ${randomUUID()}` });
+
+      expect(createResponse.status).toBe(201);
+      organizationId = createResponse.body.organization.id;
+
+      const response = await request(app)
+        .get(
+          `/organizations/${organizationId}/audit-logs?action=${encodeURIComponent(
+            `nonexistent.action.${randomUUID()}`,
+          )}`,
+        )
+        .set("Authorization", `Bearer ${sessionToken}`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.auditLogs).toEqual([]);
+      expect(response.body.pagination).toMatchObject({
+        page: 1,
+        pageSize: 20,
+        total: 0,
+        totalPages: 0,
+      });
+    } finally {
+      if (organizationId) await cleanupOrganization(organizationId);
+      await prisma.session.deleteMany({ where: { userId: user.id } });
+      await prisma.user.delete({ where: { id: user.id } });
     }
   });
 });
