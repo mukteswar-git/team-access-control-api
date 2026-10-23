@@ -15,6 +15,9 @@ import {
 import { revokeAllUserSessions } from "../auth/auth.service.js";
 import { findMembershipByUserAndOrganization } from "../../repositories/membership.repository.js";
 import { canPerformMembershipAction } from "../../services/authorization.service.js";
+import { getOrganizationAuditLogs } from "../../services/audit-log.service.js";
+import { organizationAuditLogQuerySchema } from "./organization.schema.js";
+import { z } from "zod";
 
 function getParam(value: string | string[] | undefined): string {
   if (typeof value !== "string") {
@@ -328,6 +331,56 @@ export async function revokeUserSessionsController(
     const result = await revokeAllUserSessions(userId);
 
     res.status(200).json(result);
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function getOrganizationAuditLogsController(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    if (!req.auth) {
+      res.status(401).json({
+        error: {
+          code: "UNAUTHENTICATED",
+          message: "Authentication is required",
+        },
+      });
+      return;
+    }
+
+    const query = res.locals.validatedQuery as z.infer<
+      typeof organizationAuditLogQuerySchema
+    >;
+
+    const result = await getOrganizationAuditLogs(
+      req.auth.user.id,
+      getParam(req.params.organizationId),
+      query,
+    );
+
+    res.status(200).json({
+      auditLogs: result.items.map((item) => ({
+        id: item.id,
+        organizationId: item.organizationId,
+        actorUserId: item.actorUserId,
+        actorMembershipId: item.actorMembershipId,
+        action: item.action,
+        result: item.result,
+        targetType: item.targetType,
+        targetId: item.targetId,
+        createdAt: item.createdAt,
+      })),
+      pagination: {
+        page: result.page,
+        pageSize: result.pageSize,
+        total: result.total,
+        totalPages: result.totalPages,
+      },
+    });
   } catch (error) {
     next(error);
   }

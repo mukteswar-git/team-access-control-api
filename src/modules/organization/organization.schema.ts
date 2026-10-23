@@ -44,3 +44,28 @@ export const updateReportingAssignmentBodySchema = z.discriminatedUnion(
     }),
   ],
 );
+
+export const organizationAuditLogQuerySchema = z
+  .object({
+    page: z.coerce.number().int().min(1).default(1),
+    pageSize: z.coerce.number().int().min(1).max(100).default(20),
+    action: z.string().trim().min(1).optional(),
+    result: z.string().trim().min(1).optional(),
+    actorUserId: z.string().uuid().optional(),
+    actorMembershipId: z.string().uuid().optional(),
+    targetType: z.string().trim().min(1).optional(),
+    targetId: z.string().uuid().optional(),
+    from: z.coerce.date().optional(),
+    to: z.coerce.date().optional(),
+  })
+  .strict()
+  .refine(
+    (query) =>
+      query.from === undefined ||
+      query.to === undefined ||
+      query.from <= query.to,
+    {
+      message: "The start date must not be later than the end date",
+      path: ["from"],
+    },
+  );
