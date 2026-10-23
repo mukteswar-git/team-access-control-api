@@ -204,6 +204,8 @@ describe("Invitation routes", () => {
       const memberUser = await createAuthenticatedUser();
       memberUserId = memberUser.user.id;
 
+      await createMembership(organization.id, memberUser.user.id, "member");
+
       const response = await request(app)
         .post(`/organizations/${organization.id}/invitations`)
         .set("Authorization", `Bearer ${memberUser.sessionToken}`)
@@ -211,8 +213,6 @@ describe("Invitation routes", () => {
           email: "another-member@example.com",
           roleCode: "member",
         });
-
-      await createMembership(organization.id, memberUser.user.id, "member");
 
       expect(response.status).toBe(403);
       expect(response.body.error.code).toBe("FORBIDDEN");
@@ -270,6 +270,70 @@ describe("Invitation routes", () => {
         await cleanupOrganization(organizationId);
       }
       await cleanupUser(user.id);
+    }
+  });
+
+  test("prevents one organization's owner from revoking another organization's invitation", async () => {
+    const ownerA = await createAuthenticatedUser();
+    const ownerB = await createAuthenticatedUser();
+    let organizationAId: string | undefined;
+    let organizationBId: string | undefined;
+
+    try {
+      const organizationA = await createOrganization(
+        `Invitation isolation A ${randomUUID()}`,
+        ownerA.user.id,
+      );
+      organizationAId = organizationA.id;
+
+      const organizationB = await createOrganization(
+        `Invitation isolation B ${randomUUID()}`,
+        ownerB.user.id,
+      );
+      organizationBId = organizationB.id;
+
+      // Create an invitation belonging to Organization B.
+      const createResponse = await request(app)
+        .post(`/organizations/${organizationB.id}/invitations`)
+        .set("Authorization", `Bearer ${ownerB.sessionToken}`)
+        .send({
+          email: `invited-${randomUUID()}@example.com`,
+          roleCode: "member",
+        });
+
+      expect(createResponse.status).toBe(201);
+
+      const invitationId = createResponse.body.data.invitation.id as string;
+
+      // Organization A's owner attempts to revoke Organization B's invitation.
+      const revokeResponse = await request(app)
+        .delete(
+          `/organizations/${organizationB.id}/invitations/${invitationId}`,
+        )
+        .set("Authorization", `Bearer ${ownerA.sessionToken}`);
+
+      expect(revokeResponse.status).toBe(403);
+      expect(revokeResponse.body.error.code).toBe("FORBIDDEN");
+
+      // The failed request must not mutate the invitation.
+      const savedInvitation = await prisma.invitation.findUniqueOrThrow({
+        where: { id: invitationId },
+      });
+
+      expect(savedInvitation.organizationId).toBe(organizationB.id);
+      expect(savedInvitation.revokedAt).toBeNull();
+      expect(savedInvitation.acceptedAt).toBeNull();
+    } finally {
+      if (organizationAId) {
+        await cleanupOrganization(organizationAId);
+      }
+
+      if (organizationBId) {
+        await cleanupOrganization(organizationBId);
+      }
+
+      await cleanupUser(ownerA.user.id);
+      await cleanupUser(ownerB.user.id);
     }
   });
 

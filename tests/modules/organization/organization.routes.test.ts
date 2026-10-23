@@ -1589,6 +1589,87 @@ describe("GET /organizations/:organizationId/audit-logs", () => {
     }
   });
 
+  test("grants audit-log access after a member is promoted to admin", async () => {
+    const owner = await createAuthenticatedUser();
+    const member = await createAuthenticatedUser();
+    let organizationId: string | undefined;
+
+    try {
+      const createResponse = await request(app)
+        .post("/organizations")
+        .set("Authorization", `Bearer ${owner.sessionToken}`)
+        .send({ name: `Audit role change test ${randomUUID()}` });
+
+      expect(createResponse.status).toBe(201);
+      organizationId = createResponse.body.organization.id;
+
+      if (typeof organizationId !== "string") {
+        throw new Error("Expected the organization ID to be a string");
+      }
+
+      const membership = await createMembership(
+        organizationId,
+        member.user.id,
+        "member",
+      );
+
+      const deniedResponse = await request(app)
+        .get(`/organizations/${organizationId}/audit-logs`)
+        .set("Authorization", `Bearer ${member.sessionToken}`);
+
+      expect(deniedResponse.status).toBe(403);
+      expect(deniedResponse.body.error.code).toBe("FORBIDDEN");
+
+      const roleChangeResponse = await request(app)
+        .patch(
+          `/organizations/${organizationId}/memberships/${membership.id}/role`,
+        )
+        .set("Authorization", `Bearer ${owner.sessionToken}`)
+        .send({ roleCode: "admin" });
+
+      expect(roleChangeResponse.status).toBe(200);
+      expect(roleChangeResponse.body).toMatchObject({
+        membershipId: membership.id,
+        previousRole: "member",
+        newRole: "admin",
+      });
+
+      const allowedResponse = await request(app)
+        .get(`/organizations/${organizationId}/audit-logs`)
+        .set("Authorization", `Bearer ${member.sessionToken}`);
+
+      expect(allowedResponse.status).toBe(200);
+      expect(allowedResponse.body.auditLogs).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            organizationId,
+            action: "organization.created",
+          }),
+        ]),
+      );
+
+      expect(
+        allowedResponse.body.auditLogs.every(
+          (auditLog: { organizationId: string }) =>
+            auditLog.organizationId === organizationId,
+        ),
+      ).toBe(true);
+    } finally {
+      if (organizationId) {
+        await cleanupOrganization(organizationId);
+      }
+
+      for (const account of [owner, member]) {
+        await prisma.session.deleteMany({
+          where: { userId: account.user.id },
+        });
+        await prisma.user.delete({
+          where: { id: account.user.id },
+        });
+      }
+    }
+  });
+
   test("rejects an invalid organization UUID", async () => {
     const { user, sessionToken } = await createAuthenticatedUser();
 
@@ -1705,6 +1786,85 @@ describe("GET /organizations/:organizationId/audit-logs", () => {
             log.organizationId === secondOrganizationId,
         ),
       ).toBe(false);
+    } finally {
+      if (firstOrganizationId) {
+        await cleanupOrganization(firstOrganizationId);
+      }
+      if (secondOrganizationId) {
+        await cleanupOrganization(secondOrganizationId);
+      }
+
+      for (const account of [firstOwner, secondOwner]) {
+        await prisma.session.deleteMany({
+          where: { userId: account.user.id },
+        });
+        await prisma.user.delete({
+          where: { id: account.user.id },
+        });
+      }
+    }
+  });
+
+  test("denies an owner from another organization access to audit logs", async () => {
+    const firstOwner = await createAuthenticatedUser();
+    const secondOwner = await createAuthenticatedUser();
+    let firstOrganizationId: string | undefined;
+    let secondOrganizationId: string | undefined;
+
+    try {
+      const firstCreate = await request(app)
+        .post("/organizations")
+        .set("Authorization", `Bearer ${firstOwner.sessionToken}`)
+        .send({ name: `First audit isolation ${randomUUID()}` });
+
+      const secondCreate = await request(app)
+        .post("/organizations")
+        .set("Authorization", `Bearer ${secondOwner.sessionToken}`)
+        .send({ name: `Second audit isolation ${randomUUID()}` });
+
+      expect(firstCreate.status).toBe(201);
+      expect(secondCreate.status).toBe(201);
+
+      firstOrganizationId = firstCreate.body.organization.id;
+      secondOrganizationId = secondCreate.body.organization.id;
+
+      if (
+        typeof firstOrganizationId !== "string" ||
+        typeof secondOrganizationId !== "string"
+      ) {
+        throw new Error("Expected both organization IDs to be strings");
+      }
+
+      const before = await prisma.auditLog.findMany({
+        where: {
+          organizationId: secondOrganizationId,
+        },
+        orderBy: { id: "asc" },
+        select: { id: true, organizationId: true, action: true },
+      });
+
+      expect(before.length).toBeGreaterThan(0);
+
+      const response = await request(app)
+        .get(`/organizations/${secondOrganizationId}/audit-logs`)
+        .set("Authorization", `Bearer ${firstOwner.sessionToken}`);
+
+      expect(response.status).toBe(403);
+      expect(response.body.error.code).toBe("FORBIDDEN");
+      expect(response.body.auditLogs).toBeUndefined();
+
+      const after = await prisma.auditLog.findMany({
+        where: {
+          organizationId: secondOrganizationId,
+        },
+        orderBy: { id: "asc" },
+        select: { id: true, organizationId: true, action: true },
+      });
+
+      expect(after).toEqual(before);
+      expect(
+        after.every((log) => log.organizationId === secondOrganizationId),
+      ).toBe(true);
     } finally {
       if (firstOrganizationId) {
         await cleanupOrganization(firstOrganizationId);
