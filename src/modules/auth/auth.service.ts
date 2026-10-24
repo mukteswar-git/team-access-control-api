@@ -32,10 +32,15 @@ import {
   createPasswordResetToken,
   deletePasswordResetToken,
   findPasswordResetTokenByHash,
+  invalidateUnusedPasswordResetTokens,
 } from "../../repositories/password-reset-token.repository.js";
 import { sendEmail } from "../../lib/email.js";
 import { env } from "../../config/env.js";
 import { passwordSchema } from "./auth.schema.js";
+import {
+  createSecurityEvent,
+  SecurityEventType,
+} from "../../repositories/security-event.repository.js";
 
 type RegisterUserData = {
   email: string;
@@ -413,9 +418,19 @@ export async function resetPassword(token: string, newPassword: string) {
       );
     }
 
+    await invalidateUnusedPasswordResetTokens(resetToken.userId, tx);
+
     await updateUser(resetToken.userId, { passwordHash }, tx);
 
     await revokeAllSessionsForUser(resetToken.userId, tx);
+
+    await createSecurityEvent(
+      {
+        userId: resetToken.userId,
+        eventType: SecurityEventType.PASSWORD_RESET_COMPLETED,
+      },
+      tx,
+    );
 
     return { success: true };
   });

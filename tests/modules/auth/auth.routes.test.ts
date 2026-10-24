@@ -557,6 +557,10 @@ describe("POST /auth/reset-password", () => {
 
       expect(token?.usedAt).toBeInstanceOf(Date);
     } finally {
+      await prisma.securityEvent.deleteMany({
+        where: { userId: user.id },
+      });
+
       await prisma.user.delete({ where: { id: user.id } });
     }
   });
