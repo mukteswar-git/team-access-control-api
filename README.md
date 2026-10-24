@@ -170,7 +170,17 @@ npx prisma migrate deploy
 
 Use the command appropriate to your environment. Do not run development migrations against the production database.
 
-### 6. Start the development server
+### 6. Seed the Database (Optional)
+
+If the project includes seed data for local development, run:
+
+```bash
+npx prisma db seed
+```
+
+Use seed data only in a development or test database. Do not run development seed scripts against your production database unless they are explicitly designed for production use.
+
+### 7. Start the development server
 
 ```bash
 npm run dev
