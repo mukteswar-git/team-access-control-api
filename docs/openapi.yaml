@@ -18,7 +18,7 @@ info:
 
     This specification documents implemented routes, not planned endpoints.
 servers:
-  - url: http://localhost:3000
+  - url: https://team-access-control-api-o2cn.onrender.com
     description: Local development server
 
 tags:
