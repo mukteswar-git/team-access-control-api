@@ -1,4 +1,11 @@
-import { afterAll, describe, expect, jest, test } from "@jest/globals";
+import {
+  afterAll,
+  beforeEach,
+  describe,
+  expect,
+  jest,
+  test,
+} from "@jest/globals";
 import request from "supertest";
 import argon2 from "argon2";
 import { createHash, randomUUID } from "node:crypto";
@@ -16,6 +23,26 @@ const mockSendEmail = jest
 jest.unstable_mockModule("../../../src/lib/email.js", () => ({
   sendEmail: mockSendEmail,
 }));
+
+jest.unstable_mockModule("../../../src/middleware/rate-limit.js", () => {
+  const passThrough = (
+    _req: import("express").Request,
+    _res: import("express").Response,
+    next: import("express").NextFunction,
+  ) => next();
+
+  return {
+    loginRateLimiter: passThrough,
+    resendVerificationRateLimiter: passThrough,
+    passwordResetRequestRateLimiter: passThrough,
+    resetPasswordRateLimiter: passThrough,
+  };
+});
+
+beforeEach(() => {
+  mockSendEmail.mockReset();
+  mockSendEmail.mockResolvedValue(undefined);
+});
 
 const { default: app } = await import("../../../src/app.js");
 
@@ -310,6 +337,113 @@ describe("POST /auth/verify-email", () => {
         .send({ token: rawToken });
 
       expect(secondResponse.status).toBe(400);
+    } finally {
+      await prisma.user.delete({ where: { id: user.id } });
+    }
+  });
+});
+
+describe("POST /auth/resend-verification", () => {
+  test("sends a verification email for an unverified account", async () => {
+    const email = `resend-${randomUUID()}@example.com`;
+
+    const user = await prisma.user.create({
+      data: {
+        email,
+        passwordHash: "test-hash",
+      },
+    });
+
+    try {
+      const response = await request(app)
+        .post("/auth/resend-verification")
+        .send({ email });
+
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual({
+        message:
+          "If the account exists and needs verification, verification instructions will be sent.",
+      });
+
+      expect(mockSendEmail).toHaveBeenCalledTimes(1);
+      expect(mockSendEmail).toHaveBeenCalledWith(
+        expect.objectContaining({
+          to: email,
+          subject: expect.stringContaining("Verify your email"),
+        }),
+      );
+    } finally {
+      await prisma.user.delete({ where: { id: user.id } });
+    }
+  });
+
+  test("returns the same response for an unknown email", async () => {
+    const response = await request(app)
+      .post("/auth/resend-verification")
+      .send({ email: `unknown-${randomUUID()}@example.com` });
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      message:
+        "If the account exists and needs verification, verification instructions will be sent.",
+    });
+    expect(mockSendEmail).not.toHaveBeenCalled();
+  });
+
+  test("does not send a verification email to an already-verified account", async () => {
+    const email = `verified-${randomUUID()}@example.com`;
+
+    const user = await prisma.user.create({
+      data: {
+        email,
+        passwordHash: "test-hash",
+        emailVerifiedAt: new Date(),
+      },
+    });
+
+    try {
+      const response = await request(app)
+        .post("/auth/resend-verification")
+        .send({ email });
+
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual({
+        message:
+          "If the account exists and needs verification, verification instructions will be sent.",
+      });
+      expect(mockSendEmail).not.toHaveBeenCalled();
+    } finally {
+      await prisma.user.delete({ where: { id: user.id } });
+    }
+  });
+
+  test("rejects an invalid email", async () => {
+    const response = await request(app)
+      .post("/auth/resend-verification")
+      .send({ email: "not-an-email" });
+
+    expect(response.status).toBe(400);
+    expect(mockSendEmail).not.toHaveBeenCalled();
+  });
+
+  test("returns an error when email delivery fails", async () => {
+    const email = `delivery-failure-${randomUUID()}@example.com`;
+
+    const user = await prisma.user.create({
+      data: {
+        email,
+        passwordHash: "test-hash",
+      },
+    });
+
+    mockSendEmail.mockRejectedValueOnce(new Error("Email delivery failed"));
+
+    try {
+      const response = await request(app)
+        .post("/auth/resend-verification")
+        .send({ email });
+
+      expect(response.status).toBe(500);
     } finally {
       await prisma.user.delete({ where: { id: user.id } });
     }

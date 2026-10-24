@@ -1,17 +1,53 @@
 import { createHash, randomUUID } from "node:crypto";
-import { afterAll, describe, expect, test } from "@jest/globals";
 import {
-  testPrisma as prisma,
-  disconnectTestDatabase,
-} from "../helpers/database.js";
-import {
+  afterAll,
+  beforeEach,
+  describe,
+  expect,
+  jest,
+  test,
+} from "@jest/globals";
+
+const mockSendEmail =
+  jest.fn<
+    (options: { to: string; subject: string; html: string }) => Promise<void>
+  >();
+
+function getTokenFromSentInvitationEmail(): string {
+  const email = mockSendEmail.mock.calls
+    .map(([options]) => options)
+    .find(({ subject }) => subject === "You're invited to Team Access Control");
+
+  if (!email) {
+    throw new Error("Invitation email was not sent");
+  }
+
+  const match = email.html.match(/[?&]token=([a-f0-9]{64})/);
+
+  if (!match) {
+    throw new Error("Invitation token was not found in email");
+  }
+
+  return decodeURIComponent(match[1]);
+}
+
+jest.unstable_mockModule("../../src/lib/email.js", () => ({
+  sendEmail: mockSendEmail,
+}));
+
+const { testPrisma: prisma, disconnectTestDatabase } =
+  await import("../helpers/database.js");
+
+const {
   acceptInvitation,
-  createInvitation as createInvitationService,
+  createInvitation: createInvitationService,
   getInvitationStatus,
-  revokeInvitation as revokeInvitationService,
-} from "../../src/services/invitation.service.js";
-import { InvitationError } from "../../src/services/invitation.errors.js";
-import { INVITATION_TOKEN_TTL_MS } from "../../src/constants/auth.js";
+  revokeInvitation: revokeInvitationService,
+} = await import("../../src/services/invitation.service.js");
+
+const { InvitationError } =
+  await import("../../src/services/invitation.errors.js");
+const { INVITATION_TOKEN_TTL_MS } = await import("../../src/constants/auth.js");
 
 const createInvitation = (
   actorUserId: string,
@@ -24,6 +60,11 @@ const revokeInvitation = (
   organizationId: string,
   invitationId: string,
 ) => revokeInvitationService(actorUserId, organizationId, invitationId, prisma);
+
+beforeEach(() => {
+  mockSendEmail.mockReset();
+  mockSendEmail.mockResolvedValue(undefined);
+});
 
 describe("getInvitationStatus", () => {
   const now = new Date("2026-10-20T10:00:00.000Z");
@@ -193,17 +234,19 @@ describe("Invitation service", () => {
       expect(result.invitation.invitedEmail).toBe("new.member@example.com");
       expect(result.invitation.managerMembershipId).toBe(managerMembership.id);
       expect(result.invitation).not.toHaveProperty("tokenHash");
-      expect(result.token).toMatch(/^[a-f0-9]{64}$/);
+      const token = getTokenFromSentInvitationEmail();
+
+      expect(token).toMatch(/^[a-f0-9]{64}$/);
 
       const storedInvitation = await prisma.invitation.findUniqueOrThrow({
         where: { id: result.invitation.id },
       });
 
       expect(storedInvitation.tokenHash).toBe(
-        createHash("sha256").update(result.token).digest("hex"),
+        createHash("sha256").update(token).digest("hex"),
       );
 
-      expect(storedInvitation.tokenHash).not.toBe(result.token);
+      expect(storedInvitation.tokenHash).not.toBe(token);
 
       const expectedExpiry =
         storedInvitation.createdAt.getTime() + INVITATION_TOKEN_TTL_MS;
@@ -225,7 +268,7 @@ describe("Invitation service", () => {
       expect(auditLog?.actorUserId).toBe(manager.id);
       expect(auditLog?.actorMembershipId).toBe(managerMembership.id);
       expect(auditLog?.result).toBe("success");
-      expect(JSON.stringify(auditLog?.metadata)).not.toContain(result.token);
+      expect(JSON.stringify(auditLog?.metadata)).not.toContain(token);
     } finally {
       // Remove invitations before memberships and users.
       await prisma.invitation.deleteMany({
@@ -987,7 +1030,8 @@ describe("Invitation service", () => {
       expect(result.invitation.adminMembershipId).toBeNull();
       expect(result.invitation.managerMembershipId).toBeNull();
       expect(result.invitation).not.toHaveProperty("tokenHash");
-      expect(result.token).toMatch(/^[a-f0-9]{64}$/);
+      const token = getTokenFromSentInvitationEmail();
+      expect(token).toMatch(/^[a-f0-9]{64}$/);
     } finally {
       await prisma.invitation.deleteMany({
         where: { organizationId: organization.id },
@@ -1385,7 +1429,11 @@ describe("Invitation service", () => {
     const organization = await createTestOrganization();
 
     try {
-      await createMembership(admin.id, organization.id, "admin");
+      const adminMembership = await createMembership(
+        admin.id,
+        organization.id,
+        "admin",
+      );
 
       const result = await createInvitation(admin.id, organization.id, {
         email: "unassigned-admin-member@example.com",
@@ -1393,7 +1441,7 @@ describe("Invitation service", () => {
         managerMembershipId: null,
       });
 
-      expect(result.invitation.adminMembershipId).toBeNull();
+      expect(result.invitation.adminMembershipId).toBe(adminMembership.id);
       expect(result.invitation.managerMembershipId).toBeNull();
     } finally {
       await prisma.invitation.deleteMany({
@@ -1966,7 +2014,7 @@ describe("Invitation service", () => {
         },
       });
 
-      const { invitation, token } = await createInvitation(
+      const { invitation } = await createInvitation(
         manager.id,
         organization.id,
         {
@@ -1975,6 +2023,8 @@ describe("Invitation service", () => {
           managerMembershipId: managerMembership.id,
         },
       );
+
+      const token = getTokenFromSentInvitationEmail();
 
       // Simulate an invitation that has already been accepted.
       const acceptedAt = new Date();
@@ -2049,7 +2099,7 @@ describe("Invitation service", () => {
         },
       });
 
-      const { invitation, token } = await createInvitation(
+      const { invitation } = await createInvitation(
         manager.id,
         organization.id,
         {
@@ -2058,6 +2108,8 @@ describe("Invitation service", () => {
           managerMembershipId: managerMembership.id,
         },
       );
+
+      const token = getTokenFromSentInvitationEmail();
 
       await expect(
         acceptInvitation(invitee.id, token, prisma),
@@ -2103,7 +2155,7 @@ describe("Invitation service", () => {
         "manager",
       );
 
-      const { invitation, token } = await createInvitation(
+      const { invitation } = await createInvitation(
         manager.id,
         organization.id,
         {
@@ -2112,6 +2164,8 @@ describe("Invitation service", () => {
           managerMembershipId: managerMembership.id,
         },
       );
+
+      const token = getTokenFromSentInvitationEmail();
 
       await expect(
         acceptInvitation(invitee.id, token, prisma),
@@ -2233,7 +2287,7 @@ describe("Invitation service", () => {
         },
       });
 
-      const { invitation, token } = await createInvitation(
+      const { invitation } = await createInvitation(
         manager.id,
         organization.id,
         {
@@ -2242,6 +2296,8 @@ describe("Invitation service", () => {
           managerMembershipId: managerMembership.id,
         },
       );
+
+      const token = getTokenFromSentInvitationEmail();
 
       await prisma.invitation.update({
         where: { id: invitation.id },
@@ -2298,7 +2354,7 @@ describe("Invitation service", () => {
         },
       });
 
-      const { invitation, token } = await createInvitation(
+      const { invitation } = await createInvitation(
         manager.id,
         organization.id,
         {
@@ -2307,6 +2363,8 @@ describe("Invitation service", () => {
           managerMembershipId: managerMembership.id,
         },
       );
+
+      const token = getTokenFromSentInvitationEmail();
 
       await prisma.invitation.update({
         where: { id: invitation.id },
@@ -2363,14 +2421,8 @@ describe("Invitation service", () => {
         },
       });
 
-      const existingMembership = await createMembership(
-        invitee.id,
-        organization.id,
-        "member",
-        { managerMembershipId: managerMembership.id },
-      );
-
-      const { invitation, token } = await createInvitation(
+      // Create the invitation before the invitee becomes a member.
+      const { invitation } = await createInvitation(
         manager.id,
         organization.id,
         {
@@ -2379,6 +2431,16 @@ describe("Invitation service", () => {
           managerMembershipId: managerMembership.id,
         },
       );
+
+      // The invitee becomes a member after the invitation is created.
+      const existingMembership = await createMembership(
+        invitee.id,
+        organization.id,
+        "member",
+        { managerMembershipId: managerMembership.id },
+      );
+
+      const token = getTokenFromSentInvitationEmail();
 
       await expect(
         acceptInvitation(invitee.id, token, prisma),
@@ -2455,7 +2517,7 @@ describe("Invitation service", () => {
         },
       });
 
-      const { invitation, token } = await createInvitation(
+      const { invitation } = await createInvitation(
         manager.id,
         organization.id,
         {
@@ -2464,6 +2526,8 @@ describe("Invitation service", () => {
           managerMembershipId: managerMembership.id,
         },
       );
+
+      const token = getTokenFromSentInvitationEmail();
 
       const results = await Promise.allSettled([
         acceptInvitation(invitee.id, token, prisma),
@@ -2536,7 +2600,7 @@ describe("Invitation service", () => {
         },
       });
 
-      const { invitation, token } = await createInvitation(
+      const { invitation } = await createInvitation(
         manager.id,
         organization.id,
         {
@@ -2545,6 +2609,8 @@ describe("Invitation service", () => {
           managerMembershipId: managerMembership.id,
         },
       );
+
+      const token = getTokenFromSentInvitationEmail();
 
       await prisma.$executeRawUnsafe(`
         CREATE FUNCTION ${functionName}() RETURNS trigger AS $$
@@ -2621,15 +2687,13 @@ describe("Invitation service", () => {
         },
       });
 
-      const { invitation, token } = await createInvitation(
-        admin.id,
-        organization.id,
-        {
-          email: invitedEmail,
-          roleCode: "manager",
-          adminMembershipId: adminMembership.id,
-        },
-      );
+      const { invitation } = await createInvitation(admin.id, organization.id, {
+        email: invitedEmail,
+        roleCode: "manager",
+        adminMembershipId: adminMembership.id,
+      });
+
+      const token = getTokenFromSentInvitationEmail();
 
       const result = await acceptInvitation(invitee.id, token, prisma);
 
@@ -2666,6 +2730,71 @@ describe("Invitation service", () => {
     }
   });
 
+  test("preserves the invited Member's Admin assignment on acceptance", async () => {
+    const admin = await createTestUser();
+    const invitee = await createTestUser();
+    const organization = await createTestOrganization();
+
+    try {
+      const adminMembership = await createMembership(
+        admin.id,
+        organization.id,
+        "admin",
+      );
+
+      const invitedEmail = `accept-member-admin-${randomUUID()}@example.com`;
+
+      await prisma.user.update({
+        where: { id: invitee.id },
+        data: {
+          email: invitedEmail,
+          emailVerifiedAt: new Date(),
+        },
+      });
+
+      const { invitation } = await createInvitation(admin.id, organization.id, {
+        email: invitedEmail,
+        roleCode: "member",
+        adminMembershipId: adminMembership.id,
+      });
+
+      const token = getTokenFromSentInvitationEmail();
+
+      const result = await acceptInvitation(invitee.id, token, prisma);
+
+      expect(result).toMatchObject({
+        invitationId: invitation.id,
+        status: "accepted",
+        membership: {
+          organizationId: organization.id,
+          userId: invitee.id,
+          roleId: invitation.roleId,
+          adminMembershipId: adminMembership.id,
+          managerMembershipId: null,
+        },
+      });
+
+      const membership = await prisma.membership.findUniqueOrThrow({
+        where: {
+          userId_organizationId: {
+            userId: invitee.id,
+            organizationId: organization.id,
+          },
+        },
+        include: { role: true },
+      });
+
+      expect(membership.role.code).toBe("member");
+      expect(membership.adminMembershipId).toBe(adminMembership.id);
+      expect(membership.managerMembershipId).toBeNull();
+    } finally {
+      await cleanupInvitationTestData(
+        [organization.id],
+        [admin.id, invitee.id],
+      );
+    }
+  });
+
   test("accepts an Admin invitation without reporting assignments", async () => {
     const superUser = await createTestUser();
     const invitee = await createTestUser();
@@ -2684,7 +2813,7 @@ describe("Invitation service", () => {
         },
       });
 
-      const { invitation, token } = await createInvitation(
+      const { invitation } = await createInvitation(
         superUser.id,
         organization.id,
         {
@@ -2692,6 +2821,8 @@ describe("Invitation service", () => {
           roleCode: "admin",
         },
       );
+
+      const token = getTokenFromSentInvitationEmail();
 
       const result = await acceptInvitation(invitee.id, token, prisma);
 
