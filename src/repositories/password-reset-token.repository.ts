@@ -57,3 +57,15 @@ export function deletePasswordResetToken(
     },
   });
 }
+
+export function invalidateUnusedPasswordResetTokens(
+  userId: string,
+  db: DatabaseClient = prisma,
+) {
+  return db.passwordResetToken.deleteMany({
+    where: {
+      userId,
+      usedAt: null,
+    },
+  });
+}

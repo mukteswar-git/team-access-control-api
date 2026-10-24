@@ -26,6 +26,9 @@ pnpm-debug.log*
 prisma/*.db
 prisma/*.db-journal
 
+# Local database backups
+/backups/
+
 # OS files
 .DS_Store
 Thumbs.db

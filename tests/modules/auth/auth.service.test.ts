@@ -703,7 +703,54 @@ describe("Auth service — resetPassword", () => {
       ).rejects.toMatchObject({
         code: "INVALID_OR_EXPIRED_TOKEN",
       });
+
+      const securityEvents = await prisma.securityEvent.findMany({
+        where: {
+          userId: user.id,
+          eventType: "PASSWORD_RESET_COMPLETED",
+        },
+      });
+
+      expect(securityEvents).toHaveLength(1);
+      expect(securityEvents[0]?.metadata).toEqual({});
     } finally {
+      await prisma.securityEvent.deleteMany({
+        where: { userId: user.id },
+      });
+
+      await prisma.user.delete({ where: { id: user.id } });
+    }
+  });
+
+  test("invalidates other reset tokens after a successful password reset", async () => {
+    const { user, rawToken } = await createPasswordResetFixture();
+
+    const secondRawToken = randomUUID() + randomUUID();
+    const secondTokenHash = createHash("sha256")
+      .update(secondRawToken)
+      .digest("hex");
+
+    try {
+      await prisma.passwordResetToken.create({
+        data: {
+          userId: user.id,
+          tokenHash: secondTokenHash,
+          expiresAt: new Date(Date.now() + 60_000),
+        },
+      });
+
+      await resetPassword(rawToken, "FirstNewPassword123");
+
+      await expect(
+        resetPassword(secondRawToken, "SecondNewPassword456"),
+      ).rejects.toMatchObject({
+        code: "INVALID_OR_EXPIRED_TOKEN",
+      });
+    } finally {
+      await prisma.securityEvent.deleteMany({
+        where: { userId: user.id },
+      });
+
       await prisma.user.delete({ where: { id: user.id } });
     }
   });
@@ -756,6 +803,10 @@ describe("Auth service — resetPassword", () => {
         validateSession(secondLogin.session.token),
       ).resolves.toBeNull();
     } finally {
+      await prisma.securityEvent.deleteMany({
+        where: { userId: user.id },
+      });
+
       await prisma.user.delete({ where: { id: user.id } });
     }
   });
@@ -783,6 +834,10 @@ describe("Auth service — resetPassword", () => {
 
       await logoutUser(login.session.token);
     } finally {
+      await prisma.securityEvent.deleteMany({
+        where: { userId: user.id },
+      });
+
       await prisma.user.delete({ where: { id: user.id } });
     }
   });
@@ -856,9 +911,11 @@ describe("Auth service — resetPassword", () => {
 
       expect(storedToken?.usedAt).not.toBeNull();
     } finally {
-      await prisma.user.delete({
-        where: { id: user.id },
+      await prisma.securityEvent.deleteMany({
+        where: { userId: user.id },
       });
+
+      await prisma.user.delete({ where: { id: user.id } });
     }
   });
 });
