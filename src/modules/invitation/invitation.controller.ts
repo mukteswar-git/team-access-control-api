@@ -3,6 +3,8 @@ import {
   createInvitation,
   revokeInvitation,
   acceptInvitation,
+  resendInvitation,
+  listInvitations,
 } from "../../services/invitation.service.js";
 
 export async function createInvitationController(
@@ -21,6 +23,43 @@ export async function createInvitationController(
     );
 
     res.status(201).json({
+      data: result,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function resendInvitationController(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const result = await resendInvitation(
+      req.auth!.user.id,
+      req.params.organizationId as string,
+      req.body.email,
+    );
+
+    res.status(200).json({ data: result });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function listInvitationsController(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const result = await listInvitations(
+      req.auth!.user.id,
+      req.params.organizationId as string,
+    );
+
+    res.status(200).json({
       data: result,
     });
   } catch (err) {

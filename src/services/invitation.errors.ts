@@ -9,7 +9,8 @@ export type InvitationErrorCode =
   | "PENDING_INVITATION_EXISTS"
   | "EMAIL_NOT_VERIFIED"
   | "EMAIL_MISMATCH"
-  | "ALREADY_MEMBER";
+  | "ALREADY_MEMBER"
+  | "EMAIL_DELIVERY_FAILED";
 
 export class InvitationError extends Error {
   constructor(

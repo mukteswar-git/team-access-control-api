@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { normalizeEmail } from "../../utils/normalize-email.js";
 
 export const organizationInvitationParamsSchema = z.object({
   organizationId: z.string().uuid("Organization ID must be a valid UUID"),
@@ -14,6 +15,10 @@ export const createInvitationBodySchema = z.object({
   roleCode: z.enum(["admin", "manager", "member"]),
   adminMembershipId: z.string().uuid().nullable().optional(),
   managerMembershipId: z.string().uuid().nullable().optional(),
+});
+
+export const resendInvitationBodySchema = z.object({
+  email: z.string().trim().email().transform(normalizeEmail),
 });
 
 export const acceptInvitationBodySchema = z.object({

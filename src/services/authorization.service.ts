@@ -74,7 +74,9 @@ export async function canManageMembership(
     }
 
     if (targetRole === "member") {
-      if (target.adminMembershipId !== null) return false;
+      if (target.adminMembershipId !== null) {
+        return target.adminMembershipId === actor.id;
+      }
 
       if (target.managerMembershipId === null) return true;
 
@@ -130,7 +132,9 @@ export async function canRevokeInvitation(
     }
 
     if (targetRole === "member") {
-      if (invitation.adminMembershipId !== null) return false;
+      if (invitation.adminMembershipId !== null) {
+        return invitation.adminMembershipId === actor.id;
+      }
 
       if (invitation.managerMembershipId === null) return true;
 

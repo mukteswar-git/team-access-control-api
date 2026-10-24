@@ -37,6 +37,36 @@ Under development. Features and documentation will be updated as implementation 
 
 Setup instructions, environment configuration, database migrations, and test commands will be documented as the project develops.
 
+## API Documentation
+
+The API is documented using OpenAPI 3.1.0 and Swagger UI.
+
+When the development server is running, open:
+
+- **Swagger UI:** http://localhost:3000/api-docs
+- **Health check:** http://localhost:3000/health
+- **OpenAPI specification:** `docs/openapi.yaml`
+
+### Authentication
+
+Protected endpoints require a bearer session token in the `Authorization` header.
+
+```http
+Authorization: Bearer <sessionToken>
+```
+
+Obtain a session token by calling `POST /auth/login`. In Swagger UI, use the **Authorize** control to configure authentication when testing protected endpoints.
+
+### Validate API Documentation
+
+Run the OpenAPI linter with:
+
+```bash
+npm run openapi:lint
+```
+
+The specification documents implemented API routes and their request schemas, responses, authentication requirements, and organization-level authorization rules.
+
 ## License
 
 No license has been selected yet.

@@ -1,0 +1,1408 @@
+openapi: 3.1.0
+info:
+  title: Team Access Control API
+  version: 1.0.0
+  description: |
+    API for user authentication, session management, organizations,
+    memberships, invitations, reporting assignments, and audit logs.
+
+    Authentication:
+    Protected endpoints require `Authorization: Bearer <sessionToken>`.
+    Obtain a session token from POST /auth/login.
+
+    Authorization and tenant isolation:
+    Every organization-scoped request is authorized independently using
+    trusted server-side membership, role, permission, and resource-scope data.
+    Knowing an organization or resource UUID does not grant access to it.
+    Access in one organization does not grant access in another.
+
+    This specification documents implemented routes, not planned endpoints.
+servers:
+  - url: http://localhost:3000
+    description: Local development server
+
+tags:
+  - name: Health
+    description: API availability and health checks.
+  - name: Authentication
+    description: User registration, login, email verification, and password recovery.
+  - name: Sessions
+    description: View and revoke user sessions.
+  - name: Organizations
+    description: Create organizations, retrieve organization details, and transfer ownership.
+  - name: Memberships
+    description: Manage organization memberships, roles, and reporting assignments.
+  - name: Invitations
+    description: Create, revoke, and accept organization invitations.
+  - name: Audit logs
+    description: Retrieve paginated audit events for an organization.
+
+security:
+  - bearerAuth: []
+
+paths:
+  /health:
+    get:
+      tags: [Health]
+      operationId: getHealth
+      summary: Check API health
+      security: []
+      responses:
+        "200":
+          description: API is running
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    const: ok
+
+  /auth/register:
+    post:
+      tags: [Authentication]
+      operationId: registerUser
+      summary: Register a user
+      description: Creates a user account. Registration does not require an existing session.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                  format: email
+                  description: Trimmed before validation.
+                  example: user@example.com
+                password:
+                  $ref: "#/components/schemas/Password"
+      responses:
+        "201":
+          description: User registered
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user]
+                properties:
+                  user:
+                    $ref: "#/components/schemas/Resource"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "409":
+          description: Email already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /auth/me:
+    get:
+      tags: [Authentication]
+      operationId: getCurrentUser
+      summary: Get the current user's profile
+      description: Returns the profile associated with the authenticated session.
+      responses:
+        "200":
+          description: Current user retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user]
+                properties:
+                  user:
+                    type: object
+                    required: [id, email, emailVerified]
+                    properties:
+                      id:
+                        type: string
+                        format: uuid
+                      email:
+                        type: string
+                        format: email
+                      emailVerified:
+                        type: boolean
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+
+  /auth/login:
+    post:
+      tags: [Authentication]
+      operationId: loginUser
+      summary: Log in
+      description: |
+        Returns a session token. Login is limited to 10 attempts per
+        15-minute window. Use the returned token as a Bearer token.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: user@example.com
+                password:
+                  type: string
+                  minLength: 1
+      responses:
+        "200":
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user, session, sessionToken]
+                properties:
+                  user:
+                    $ref: "#/components/schemas/Resource"
+                  session:
+                    type: object
+                    required: [expiresAt]
+                    properties:
+                      expiresAt:
+                        type: string
+                        format: date-time
+                  sessionToken:
+                    type: string
+                    description: Secret session credential. Do not share or log it.
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Email not verified
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          $ref: "#/components/responses/RateLimitError"
+
+  /auth/resend-verification:
+    post:
+      tags:
+        - Authentication
+      summary: Resend email verification instructions
+      description: >-
+        Requests a new email verification link. The response does not reveal
+        whether the account exists or whether its email is already verified.
+        Limited to 3 requests per 15 minutes per client IP.
+      operationId: resendEmailVerification
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - email
+              properties:
+                email:
+                  type: string
+                  format: email
+                  description: Email address associated with the account.
+                  example: user@example.com
+      responses:
+        "200":
+          description: Verification request processed without revealing account status.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - message
+                properties:
+                  message:
+                    type: string
+                    example: If the account exists and needs verification, verification instructions will be sent.
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimitError"
+        "500":
+          description: Email delivery or unexpected server failure
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /auth/verify-email:
+    post:
+      tags: [Authentication]
+      operationId: verifyEmail
+      summary: Verify an email address
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token:
+                  type: string
+                  minLength: 1
+      responses:
+        "200":
+          description: Email verified
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user]
+                properties:
+                  user:
+                    $ref: "#/components/schemas/Resource"
+        "400":
+          description: Request validation failed, or the verification token is invalid or expired.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /auth/request-password-reset:
+    post:
+      tags: [Authentication]
+      operationId: requestPasswordReset
+      summary: Request password reset instructions
+      description: |
+        Limited to 5 requests per 15-minute window. The response is generic
+        and does not confirm whether the email belongs to an account.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: user@example.com
+      responses:
+        "200":
+          description: Generic response to avoid account enumeration
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [message]
+                properties:
+                  message:
+                    type: string
+                    example: If an account exists for that email, password reset instructions will be sent.
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimitError"
+
+  /auth/reset-password:
+    post:
+      tags: [Authentication]
+      operationId: resetPassword
+      summary: Reset a password
+      description: Limited to 5 attempts per 15-minute window.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, newPassword]
+              properties:
+                token:
+                  type: string
+                  minLength: 1
+                newPassword:
+                  $ref: "#/components/schemas/Password"
+      responses:
+        "200":
+          description: Password reset successful
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [message]
+                properties:
+                  message:
+                    type: string
+                    example: Password reset successful
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimitError"
+
+  /auth/logout:
+    post:
+      tags: [Sessions]
+      operationId: logout
+      summary: Revoke the current session
+      responses:
+        "200":
+          description: Logout successful
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+
+  /auth/sessions:
+    get:
+      tags: [Sessions]
+      operationId: listOwnSessions
+      summary: List the current user's sessions
+      description: Returns sessions belonging to the authenticated global user account.
+      responses:
+        "200":
+          description: Sessions retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sessions]
+                properties:
+                  sessions:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Resource"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+    delete:
+      tags: [Sessions]
+      operationId: revokeAllOwnSessions
+      summary: Revoke all of the current user's sessions
+      responses:
+        "200":
+          description: Sessions revoked
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [message, revokedCount]
+                properties:
+                  message:
+                    type: string
+                  revokedCount:
+                    type: integer
+                    minimum: 0
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+
+  /auth/sessions/{sessionId}:
+    delete:
+      tags: [Sessions]
+      operationId: revokeOwnSession
+      summary: Revoke one of the current user's sessions
+      description: A user can revoke only a session belonging to their own account.
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+      responses:
+        "200":
+          description: Session revoked
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          description: Session not found or already revoked
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /organizations:
+    post:
+      tags: [Organizations]
+      operationId: createOrganization
+      summary: Create an organization
+      description: Requires an authenticated user with a verified email address.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                  description: Trimmed before validation.
+                  example: Example Organization
+      responses:
+        "201":
+          description: Organization created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [organization]
+                properties:
+                  organization:
+                    $ref: "#/components/schemas/Resource"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /organizations/my:
+    get:
+      tags: [Organizations]
+      operationId: listMyOrganizations
+      summary: List my organizations
+      description: |
+        Returns the organizations the authenticated user belongs to,
+        including the user's role in each organization.
+        Membership and role information is derived from server-side data.
+      responses:
+        "200":
+          description: Organizations retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [organizations]
+                properties:
+                  organizations:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, organizationId, role, organization]
+                      properties:
+                        id:
+                          type: string
+                          format: uuid
+                          description: Membership ID
+                        organizationId:
+                          type: string
+                          format: uuid
+                        role:
+                          type: object
+                          required: [code, name]
+                          properties:
+                            code:
+                              type: string
+                            name:
+                              type: string
+                        organization:
+                          type: object
+                          required: [id, name]
+                          properties:
+                            id:
+                              type: string
+                              format: uuid
+                            name:
+                              type: string
+
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+
+  /organizations/{organizationId}:
+    parameters:
+      - $ref: "#/components/parameters/OrganizationId"
+    get:
+      tags: [Organizations]
+      operationId: getOrganization
+      summary: Get an organization
+      description: Requires authorized membership in the requested organization.
+      responses:
+        "200":
+          description: Organization retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [organization]
+                properties:
+                  organization:
+                    $ref: "#/components/schemas/Resource"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /organizations/{organizationId}/transfer-ownership:
+    parameters:
+      - $ref: "#/components/parameters/OrganizationId"
+    post:
+      tags: [Organizations]
+      operationId: transferOrganizationOwnership
+      summary: Transfer organization ownership
+      description: The target membership must be valid within this organization. The current actor must be authorized to transfer ownership.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [targetMembershipId]
+              properties:
+                targetMembershipId:
+                  type: string
+                  format: uuid
+      responses:
+        "200":
+          description: Ownership transferred
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Resource"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /organizations/{organizationId}/memberships:
+    parameters:
+      - $ref: "#/components/parameters/OrganizationId"
+    get:
+      tags: [Memberships]
+      operationId: listOrganizationMemberships
+      summary: List organization memberships
+      description: |
+        Requires authorized membership in this organization.
+        Results are scoped to this organization; membership in another
+        organization does not grant access.
+      responses:
+        "200":
+          description: Memberships retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [memberships]
+                properties:
+                  memberships:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Resource"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /organizations/{organizationId}/memberships/{membershipId}:
+    parameters:
+      - $ref: "#/components/parameters/OrganizationId"
+      - $ref: "#/components/parameters/MembershipId"
+    get:
+      tags: [Memberships]
+      operationId: getMembership
+      summary: Get a membership
+      description: The membership must belong to the requested organization.
+      responses:
+        "200":
+          description: Membership retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [membership]
+                properties:
+                  membership:
+                    $ref: "#/components/schemas/Resource"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [Memberships]
+      operationId: removeMembership
+      summary: Remove a membership
+      description: Removes organization-specific access. It does not delete the global user account or other organization memberships.
+      responses:
+        "200":
+          description: Membership removed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Resource"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /organizations/{organizationId}/memberships/{membershipId}/role:
+    parameters:
+      - $ref: "#/components/parameters/OrganizationId"
+      - $ref: "#/components/parameters/MembershipId"
+    patch:
+      tags: [Memberships]
+      operationId: changeMembershipRole
+      summary: Change a membership's role
+      description: Role changes are subject to organization permissions and administrative scope.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [roleCode]
+              properties:
+                roleCode:
+                  type: string
+                  enum: [super_user, admin, manager, member]
+      responses:
+        "200":
+          description: Membership role changed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Resource"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /organizations/{organizationId}/memberships/{membershipId}/reporting-assignment:
+    parameters:
+      - $ref: "#/components/parameters/OrganizationId"
+      - $ref: "#/components/parameters/MembershipId"
+    patch:
+      tags: [Memberships]
+      operationId: updateReportingAssignment
+      summary: Update a membership's reporting assignment
+      description: Reporting assignments must be valid within the same organization and permitted administrative scope.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - $ref: "#/components/schemas/ManagerReportingAssignment"
+                - $ref: "#/components/schemas/MemberReportingAssignment"
+              discriminator:
+                propertyName: role
+      responses:
+        "200":
+          description: Reporting assignment updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Resource"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /organizations/{organizationId}/structure:
+    parameters:
+      - $ref: "#/components/parameters/OrganizationId"
+    get:
+      tags: [Memberships]
+      operationId: getOrganizationStructure
+      summary: Get the organization reporting structure
+      description: Returns the reporting structure visible to the authenticated user under organization authorization rules.
+      responses:
+        "200":
+          description: Organization structure retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [structure]
+                properties:
+                  structure:
+                    $ref: "#/components/schemas/Resource"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /organizations/{organizationId}/users/{userId}/sessions:
+    parameters:
+      - $ref: "#/components/parameters/OrganizationId"
+      - name: userId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    delete:
+      tags: [Sessions]
+      operationId: revokeOrganizationUsersSessions
+      summary: Revoke all sessions for an organization member
+      description: |
+        Requires `session.manage_any` within the requested organization.
+        The target user must be a member of that organization and within
+        the actor's permitted administrative scope.
+      responses:
+        "200":
+          description: User sessions revoked
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Resource"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /organizations/{organizationId}/invitations:
+    parameters:
+      - $ref: "#/components/parameters/OrganizationId"
+
+    get:
+      tags: [Invitations]
+      operationId: listInvitations
+      summary: List organization invitations
+      description: |
+        Returns invitations for the specified organization, ordered from
+        newest to oldest. Requires authentication, invitation-management
+        permission, and access to the organization.
+        Invitation tokens and token hashes are never returned.
+      responses:
+        "200":
+          description: Invitations retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      required:
+                        - id
+                        - invitedEmail
+                        - role
+                        - status
+                        - createdAt
+                        - expiresAt
+                      properties:
+                        id:
+                          type: string
+                          format: uuid
+                        invitedEmail:
+                          type: string
+                          format: email
+                        role:
+                          type: string
+                          enum: [admin, manager, member]
+                        adminMembershipId:
+                          type: [string, "null"]
+                          format: uuid
+                        managerMembershipId:
+                          type: [string, "null"]
+                          format: uuid
+                        status:
+                          type: string
+                          enum: [pending, accepted, revoked, expired]
+                        createdAt:
+                          type: string
+                          format: date-time
+                        expiresAt:
+                          type: string
+                          format: date-time
+                        acceptedAt:
+                          type: [string, "null"]
+                          format: date-time
+                        revokedAt:
+                          type: [string, "null"]
+                          format: date-time
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+    post:
+      tags: [Invitations]
+      operationId: createInvitation
+      summary: Create an invitation
+      description: |
+        Requires invitation creation permission and an allowed target scope.
+        The invitation role and reporting assignment are validated server-side.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, roleCode]
+              properties:
+                email:
+                  type: string
+                  format: email
+                roleCode:
+                  type: string
+                  enum: [admin, manager, member]
+                adminMembershipId:
+                  type: [string, "null"]
+                  format: uuid
+                managerMembershipId:
+                  type: [string, "null"]
+                  format: uuid
+      responses:
+        "201":
+          description: Invitation created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: "#/components/schemas/Resource"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: A conflicting invitation or membership exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /organizations/{organizationId}/invitations/resend:
+    post:
+      tags: [Invitations]
+      operationId: resendInvitation
+      summary: Resend an invitation
+      description: |
+        Resends the email for a pending invitation identified by email
+        within the specified organization.
+        The invitation token is rotated, and the previous token becomes invalid.
+        The raw token is never returned in the API response.
+        Requires authentication and permission to manage the invitation.
+      parameters:
+        - name: organizationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: user@example.com
+      responses:
+        "200":
+          description: Invitation email resent
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [invitationId, invitedEmail, expiresAt, status]
+                    properties:
+                      invitationId:
+                        type: string
+                        format: uuid
+                      invitedEmail:
+                        type: string
+                        format: email
+                      expiresAt:
+                        type: string
+                        format: date-time
+                      status:
+                        type: string
+                        const: pending
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          description: Actor is not authorized to resend this invitation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: No pending invitation was found for this email
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Invitation is no longer pending
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "502":
+          description: Invitation token was refreshed, but email delivery failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /organizations/{organizationId}/invitations/{invitationId}:
+    parameters:
+      - $ref: "#/components/parameters/OrganizationId"
+      - name: invitationId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    delete:
+      tags: [Invitations]
+      operationId: revokeInvitation
+      summary: Revoke an invitation
+      description: Requires invitation revocation permission and access to the invitation within the organization.
+      responses:
+        "200":
+          description: Invitation revoked
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: "#/components/schemas/Resource"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Invitation is not in a revocable state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /invitations/accept:
+    post:
+      tags: [Invitations]
+      operationId: acceptInvitation
+      summary: Accept an invitation
+      description: |
+        Requires authentication. The invitation token is supplied in the
+        request body. The authenticated account must satisfy the invitation's
+        email-verification and matching-email requirements.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token:
+                  type: string
+                  minLength: 1
+      responses:
+        "200":
+          description: Invitation accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: "#/components/schemas/Resource"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Invitation is invalid or the user is already a member
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /organizations/{organizationId}/audit-logs:
+    parameters:
+      - $ref: "#/components/parameters/OrganizationId"
+    get:
+      tags: [Audit logs]
+      operationId: listOrganizationAuditLogs
+      summary: List organization audit logs
+      description: |
+        Requires `audit_log.read`; only the Super User and Admin roles may
+        view audit logs. All results are scoped to the requested organization.
+        Cross-organization membership does not grant access.
+      parameters:
+        - name: page
+          in: query
+          description: Page number (defaults to 1).
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: pageSize
+          in: query
+          description: Page size (defaults to 20; maximum 100).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: action
+          in: query
+          schema:
+            type: string
+            minLength: 1
+        - name: result
+          in: query
+          schema:
+            type: string
+            minLength: 1
+        - name: actorUserId
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: actorMembershipId
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: targetType
+          in: query
+          schema:
+            type: string
+            minLength: 1
+        - name: targetId
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: from
+          in: query
+          description: Inclusive or exclusive behavior depends on the implementation; provide a valid date-time.
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date-time
+      responses:
+        "200":
+          description: Audit logs retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [auditLogs, pagination]
+                properties:
+                  auditLogs:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AuditLog"
+                  pagination:
+                    $ref: "#/components/schemas/Pagination"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: session token
+      description: Use the sessionToken returned by POST /auth/login.
+
+  parameters:
+    OrganizationId:
+      name: organizationId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    MembershipId:
+      name: membershipId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    SessionId:
+      name: sessionId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+  responses:
+    Unauthenticated:
+      description: Missing, malformed, invalid, or expired session token
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: UNAUTHENTICATED
+              message: Authentication is required
+    Forbidden:
+      description: Authenticated, but not authorized for this action or resource
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: FORBIDDEN
+              message: You are not authorized to perform this action
+    NotFound:
+      description: Resource not found in the requested scope
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    ValidationError:
+      description: Request body, path parameter, or query validation failed
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ValidationErrorResponse"
+          example:
+            error:
+              code: VALIDATION_ERROR
+              message: Request validation failed
+              details:
+                - field: email
+                  message: Invalid email address
+    RateLimitError:
+      description: Rate limit exceeded
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: RATE_LIMIT_EXCEEDED
+              message: Too many login attempts. Please try again later.
+
+  schemas:
+    Password:
+      type: string
+      minLength: 8
+      maxLength: 128
+      description: Password must contain 8–128 characters.
+      writeOnly: true
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+
+    ValidationErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, details]
+          properties:
+            code:
+              type: string
+              const: VALIDATION_ERROR
+            message:
+              type: string
+            details:
+              type: array
+              items:
+                type: object
+                required: [field, message]
+                properties:
+                  field:
+                    type: string
+                  message:
+                    type: string
+
+    MessageResponse:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+
+    Resource:
+      type: object
+      description: |
+        Resource object returned by the implemented service. Exact properties
+        depend on the resource and are not fully specified by the inspected
+        controller response shape.
+      additionalProperties: true
+
+    ManagerReportingAssignment:
+      type: object
+      required: [role, adminMembershipId]
+      properties:
+        role:
+          type: string
+          const: manager
+        adminMembershipId:
+          type: [string, "null"]
+          format: uuid
+
+    MemberReportingAssignment:
+      type: object
+      required: [role, managerMembershipId]
+      properties:
+        role:
+          type: string
+          const: member
+        managerMembershipId:
+          type: [string, "null"]
+          format: uuid
+
+    AuditLog:
+      type: object
+      required:
+        - id
+        - organizationId
+        - actorUserId
+        - actorMembershipId
+        - action
+        - result
+        - targetType
+        - targetId
+        - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        organizationId:
+          type: string
+          format: uuid
+        actorUserId:
+          type: string
+          format: uuid
+        actorMembershipId:
+          type: [string, "null"]
+          format: uuid
+        action:
+          type: string
+        result:
+          type: string
+        targetType:
+          type: [string, "null"]
+        targetId:
+          type: [string, "null"]
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+
+    Pagination:
+      type: object
+      required: [page, pageSize, total, totalPages]
+      properties:
+        page:
+          type: integer
+          minimum: 1
+        pageSize:
+          type: integer
+          minimum: 1
+          maximum: 100
+        total:
+          type: integer
+          minimum: 0
+        totalPages:
+          type: integer
+          minimum: 0

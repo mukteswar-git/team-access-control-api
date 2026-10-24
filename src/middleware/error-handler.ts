@@ -74,6 +74,7 @@ const errorHandler: ErrorRequestHandler = (err, _req, res, _next) => {
       EMAIL_NOT_VERIFIED: 403,
       EMAIL_MISMATCH: 403,
       ALREADY_MEMBER: 409,
+      EMAIL_DELIVERY_FAILED: 502,
     };
 
     res.status(statusCodes[err.code]).json({
