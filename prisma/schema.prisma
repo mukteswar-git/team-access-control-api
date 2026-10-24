@@ -19,7 +19,8 @@ model User {
   passwordResetTokens     PasswordResetToken[]
   sessions                Session[]
   memberships             Membership[]
-  auditLogs               AuditLog[] @relation("AuditActorUser")
+  auditLogs               AuditLog[]               @relation("AuditActorUser")
+  securityEvents          SecurityEvent[]
 
   @@map("users")
 }
@@ -90,8 +91,8 @@ model Role {
   name        String @db.Text
   description String @db.Text
 
-  memberships    Membership[]
-  invitations    Invitation[]
+  memberships     Membership[]
+  invitations     Invitation[]
   rolePermissions RolePermission[]
 
   @@map("roles")
@@ -100,8 +101,8 @@ model Role {
 model Permission {
   id          String @id @default(uuid()) @db.Uuid
   code        String @unique @db.Text
-  name         String @db.Text
-  description  String @db.Text
+  name        String @db.Text
+  description String @db.Text
 
   rolePermissions RolePermission[]
 
@@ -136,30 +137,27 @@ model Membership {
   user         User         @relation(fields: [userId], references: [id], onDelete: Restrict)
   role         Role         @relation(fields: [roleId], references: [id], onDelete: Restrict)
 
-  adminMembership Membership? @relation("AdminManagedManagers", fields: [adminMembershipId], references: [id], onDelete: SetNull)
+  adminMembership Membership? @relation("AdminManagedManagers", fields: [adminMembershipId, organizationId], references: [id, organizationId], onDelete: Restrict)
 
   managedManagers Membership[] @relation("AdminManagedManagers")
 
-  managerMembership Membership? @relation("ManagerManagedMembers", fields: [managerMembershipId], references: [id], onDelete: SetNull)
+  managerMembership Membership? @relation("ManagerManagedMembers", fields: [managerMembershipId, organizationId], references: [id, organizationId], onDelete: Restrict)
 
   managedMembers Membership[] @relation("ManagerManagedMembers")
 
-  createdInvitations    Invitation[] @relation("InvitationCreator")
-  invitationsAsAdmin    Invitation[] @relation("InvitationAdmin")
-  invitationsAsManager  Invitation[] @relation("InvitationManager")
-  auditLogsAsActor      AuditLog[]   @relation("AuditActorMembership")
+  createdInvitations   Invitation[] @relation("InvitationCreator")
+  invitationsAsAdmin   Invitation[] @relation("InvitationAdmin")
+  invitationsAsManager Invitation[] @relation("InvitationManager")
+  auditLogsAsActor     AuditLog[]   @relation("AuditActorMembership")
 
   @@unique([userId, organizationId])
-
   // Required for the organization-aware composite foreign keys.
   @@unique([id, organizationId])
-
   @@index([organizationId])
   @@index([organizationId, roleId])
   @@index([organizationId, userId])
   @@index([adminMembershipId])
   @@index([managerMembershipId])
-
   @@map("memberships")
 }
 
@@ -178,47 +176,40 @@ model Invitation {
   acceptedAt DateTime? @map("accepted_at") @db.Timestamptz(6)
   revokedAt  DateTime? @map("revoked_at") @db.Timestamptz(6)
 
-  createdByMembershipId String? @map("created_by_membership_id") @db.Uuid
-  createdAt             DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdByMembershipId String?  @map("created_by_membership_id") @db.Uuid
+  createdAt             DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   role         Role         @relation(fields: [roleId], references: [id], onDelete: Restrict)
 
-  
   createdByMembership Membership? @relation("InvitationCreator", fields: [createdByMembershipId], references: [id], onDelete: SetNull)
 
+  adminMembership Membership? @relation("InvitationAdmin", fields: [adminMembershipId, organizationId], references: [id, organizationId], onDelete: Restrict)
 
-  
-  adminMembership Membership? @relation("InvitationAdmin", fields: [adminMembershipId], references: [id], onDelete: Restrict)
-
-
-  managerMembership Membership? @relation("InvitationManager", fields: [managerMembershipId], references: [id], onDelete: Restrict)
+  managerMembership Membership? @relation("InvitationManager", fields: [managerMembershipId, organizationId], references: [id, organizationId], onDelete: Restrict)
 
   @@index([organizationId])
   @@index([organizationId, invitedEmail])
   @@index([createdByMembershipId])
   @@index([expiresAt])
-
   @@map("invitations")
 }
 
 model AuditLog {
-  id                String    @id @default(uuid()) @db.Uuid
-  organizationId    String    @map("organization_id") @db.Uuid
-  actorUserId       String?   @map("actor_user_id") @db.Uuid
-  actorMembershipId String?   @map("actor_membership_id") @db.Uuid
-  action            String    @db.Text
-  result            String    @db.Text
-  targetType        String?   @map("target_type") @db.Text
-  targetId          String?   @map("target_id") @db.Uuid
-  metadata          Json      @default("{}") @db.JsonB
-  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  id                String   @id @default(uuid()) @db.Uuid
+  organizationId    String   @map("organization_id") @db.Uuid
+  actorUserId       String?  @map("actor_user_id") @db.Uuid
+  actorMembershipId String?  @map("actor_membership_id") @db.Uuid
+  action            String   @db.Text
+  result            String   @db.Text
+  targetType        String?  @map("target_type") @db.Text
+  targetId          String?  @map("target_id") @db.Uuid
+  metadata          Json     @default("{}") @db.JsonB
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
 
-  
   actorUser User? @relation("AuditActorUser", fields: [actorUserId], references: [id], onDelete: SetNull)
-
 
   actorMembership Membership? @relation("AuditActorMembership", fields: [actorMembershipId], references: [id], onDelete: SetNull)
 
@@ -227,6 +218,19 @@ model AuditLog {
   @@index([actorMembershipId, createdAt])
   @@index([targetType, targetId])
   @@index([action, createdAt])
-
   @@map("audit_logs")
+}
+
+model SecurityEvent {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  eventType String   @map("event_type") @db.Text
+  metadata  Json     @default("{}") @db.JsonB
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@index([userId, createdAt])
+  @@index([eventType, createdAt])
+  @@map("security_events")
 }
