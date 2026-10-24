@@ -24,6 +24,7 @@ import {
   removeMembershipController,
   revokeUserSessionsController,
   getOrganizationAuditLogsController,
+  listMyOrganizations,
 } from "./organization.controller.js";
 import validateQuery from "../../middleware/validate-query.js";
 
@@ -35,6 +36,8 @@ router.post(
   validate(createOrganizationBodySchema),
   createOrganization,
 );
+
+router.get("/my", requireAuth, listMyOrganizations);
 
 router.get(
   "/:organizationId",

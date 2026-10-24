@@ -15,7 +15,7 @@ export async function sendEmail({
   html,
 }: SendEmailOptions): Promise<void> {
   const { error } = await resend.emails.send({
-    from: "Team Access Control <onboarding@resend.dev>",
+    from: "Team Access Control <noreply@mail.mukteswar.me>",
     to,
     subject,
     html,

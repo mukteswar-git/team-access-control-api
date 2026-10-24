@@ -1640,7 +1640,7 @@ describe("Database integrity", () => {
     }
   });
 
-  test("rejects a member with an admin assignment", async () => {
+  test("allows a member with a direct admin assignment", async () => {
     const adminUser = await prisma.user.create({
       data: {
         email: `target-admin-${randomUUID()}@example.com`,
@@ -1676,6 +1676,87 @@ describe("Database integrity", () => {
         },
       });
 
+      const memberMembership = await prisma.membership.create({
+        data: {
+          userId: memberUser.id,
+          organizationId: organization.id,
+          roleId: memberRole.id,
+          adminMembershipId: adminMembership.id,
+        },
+      });
+
+      expect(memberMembership.adminMembershipId).toBe(adminMembership.id);
+      expect(memberMembership.managerMembershipId).toBeNull();
+    } finally {
+      await prisma.membership.deleteMany({
+        where: { organizationId: organization.id },
+      });
+
+      await prisma.organization.delete({
+        where: { id: organization.id },
+      });
+
+      await prisma.user.deleteMany({
+        where: { id: { in: [adminUser.id, memberUser.id] } },
+      });
+    }
+  });
+
+  test("rejects a member assigned to both an admin and a manager", async () => {
+    const adminUser = await prisma.user.create({
+      data: {
+        email: `dual-admin-${randomUUID()}@example.com`,
+        passwordHash: "hash",
+      },
+    });
+
+    const managerUser = await prisma.user.create({
+      data: {
+        email: `dual-manager-${randomUUID()}@example.com`,
+        passwordHash: "hash",
+      },
+    });
+
+    const memberUser = await prisma.user.create({
+      data: {
+        email: `dual-member-${randomUUID()}@example.com`,
+        passwordHash: "hash",
+      },
+    });
+
+    const organization = await prisma.organization.create({
+      data: { name: `Dual Assignment ${randomUUID()}` },
+    });
+
+    const adminRole = await prisma.role.findUniqueOrThrow({
+      where: { code: "admin" },
+    });
+
+    const managerRole = await prisma.role.findUniqueOrThrow({
+      where: { code: "manager" },
+    });
+
+    const memberRole = await prisma.role.findUniqueOrThrow({
+      where: { code: "member" },
+    });
+
+    try {
+      const adminMembership = await prisma.membership.create({
+        data: {
+          userId: adminUser.id,
+          organizationId: organization.id,
+          roleId: adminRole.id,
+        },
+      });
+
+      const managerMembership = await prisma.membership.create({
+        data: {
+          userId: managerUser.id,
+          organizationId: organization.id,
+          roleId: managerRole.id,
+        },
+      });
+
       await expect(
         prisma.membership.create({
           data: {
@@ -1683,6 +1764,7 @@ describe("Database integrity", () => {
             organizationId: organization.id,
             roleId: memberRole.id,
             adminMembershipId: adminMembership.id,
+            managerMembershipId: managerMembership.id,
           },
         }),
       ).rejects.toThrow();
@@ -1696,7 +1778,9 @@ describe("Database integrity", () => {
       });
 
       await prisma.user.deleteMany({
-        where: { id: { in: [adminUser.id, memberUser.id] } },
+        where: {
+          id: { in: [adminUser.id, managerUser.id, memberUser.id] },
+        },
       });
     }
   });

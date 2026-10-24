@@ -43,3 +43,20 @@ export function findInvitationByTokenHash(
     },
   });
 }
+
+export async function findInvitationsByOrganization(
+  organizationId: string,
+  db: DatabaseClient = prisma,
+) {
+  return db.invitation.findMany({
+    where: {
+      organizationId,
+    },
+    include: {
+      role: true,
+    },
+    orderBy: {
+      createdAt: "desc",
+    },
+  });
+}

@@ -8,6 +8,7 @@ import {
 import { hasPermission } from "./authorization.service.js";
 import { OrganizationError } from "./organization.errors.js";
 import { createAuditLog } from "./audit-log.service.js";
+import { findMembershipsByUserId } from "../repositories/membership.repository.js";
 
 export const createOrganizationSchema = z.object({
   name: z.string().trim().min(1, "Organization name is required"),
@@ -139,6 +140,10 @@ export async function getOrganizationForUser(
   }
 
   return organization;
+}
+
+export async function listOrganizationsForUser(userId: string) {
+  return findMembershipsByUserId(userId);
 }
 
 export async function transferOrganizationOwnership(

@@ -7,11 +7,14 @@ import {
   invitationParamsSchema,
   createInvitationBodySchema,
   acceptInvitationBodySchema,
+  resendInvitationBodySchema,
 } from "./invitation.schema.js";
 import {
   createInvitationController,
   revokeInvitationController,
   acceptInvitationController,
+  resendInvitationController,
+  listInvitationsController,
 } from "./invitation.controller.js";
 
 const router = Router();
@@ -22,6 +25,21 @@ router.post(
   validateParams(organizationInvitationParamsSchema),
   validate(createInvitationBodySchema),
   createInvitationController,
+);
+
+router.post(
+  "/organizations/:organizationId/invitations/resend",
+  requireAuth,
+  validateParams(organizationInvitationParamsSchema),
+  validate(resendInvitationBodySchema),
+  resendInvitationController,
+);
+
+router.get(
+  "/organizations/:organizationId/invitations",
+  requireAuth,
+  validateParams(organizationInvitationParamsSchema),
+  listInvitationsController,
 );
 
 router.delete(
