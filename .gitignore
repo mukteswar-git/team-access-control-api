@@ -48,3 +48,6 @@ Thumbs.db
 .claude/
 .windsurf/
 skills-lock.json
+
+# Local database backup
+/team_access_control_test_backup.sql
