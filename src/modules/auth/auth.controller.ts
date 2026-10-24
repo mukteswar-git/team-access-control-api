@@ -3,6 +3,7 @@ import {
   registerUser,
   loginUser,
   verifyEmail as verifyEmailService,
+  requestEmailVerification,
   requestPasswordReset,
   resetPassword,
   logoutSession,
@@ -43,6 +44,36 @@ export async function login(req: Request, res: Response, next: NextFunction) {
   }
 }
 
+export async function getCurrentUser(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const auth = req.auth;
+
+    if (!auth) {
+      res.status(401).json({
+        error: {
+          code: "UNAUTHENTICATED",
+          message: "Authentication is required",
+        },
+      });
+      return;
+    }
+
+    res.status(200).json({
+      user: {
+        id: auth.user.id,
+        email: auth.user.email,
+        emailVerified: auth.user.emailVerifiedAt !== null,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
 export async function verifyEmail(
   req: Request,
   res: Response,
@@ -51,6 +82,23 @@ export async function verifyEmail(
   try {
     const user = await verifyEmailService(req.body.token);
     res.status(200).json({ user });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function resendVerification(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    await requestEmailVerification(req.body.email);
+
+    res.status(200).json({
+      message:
+        "If the account exists and needs verification, verification instructions will be sent.",
+    });
   } catch (error) {
     next(error);
   }

@@ -2,6 +2,7 @@ import type { Request, Response, NextFunction } from "express";
 import {
   createOrganizationForUser,
   getOrganizationForUser,
+  listOrganizationsForUser,
   transferOrganizationOwnership,
 } from "../../services/organization.service.js";
 import {
@@ -159,6 +160,32 @@ export async function getMembership(
     );
 
     res.status(200).json({ membership });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function listMyOrganizations(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const userId = req.auth?.user.id;
+
+    if (!userId) {
+      res.status(401).json({
+        error: {
+          code: "UNAUTHENTICATED",
+          message: "Authentication is required",
+        },
+      });
+      return;
+    }
+
+    const organizations = await listOrganizationsForUser(userId);
+
+    res.status(200).json({ organizations });
   } catch (error) {
     next(error);
   }

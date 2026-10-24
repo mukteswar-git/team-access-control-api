@@ -6,6 +6,16 @@ import {
   testPrisma as prisma,
   disconnectTestDatabase,
 } from "../../helpers/database.js";
+import { beforeEach, jest } from "@jest/globals";
+
+const mockSendEmail =
+  jest.fn<
+    (options: { to: string; subject: string; html: string }) => Promise<void>
+  >();
+
+jest.unstable_mockModule("../../../src/lib/email.js", () => ({
+  sendEmail: mockSendEmail,
+}));
 
 const { default: app } = await import("../../../src/app.js");
 
@@ -37,6 +47,24 @@ async function createAuthenticatedUser() {
   }
 
   return { user, sessionToken };
+}
+
+function getTokenFromSentInvitationEmail(): string {
+  const email = mockSendEmail.mock.calls
+    .map(([options]) => options)
+    .find(({ subject }) => subject === "You're invited to Team Access Control");
+
+  if (!email) {
+    throw new Error("Invitation email was not sent");
+  }
+
+  const match = email.html.match(/[?&]token=([a-f0-9]{64})/);
+
+  if (!match) {
+    throw new Error("Invitation token was not found in email");
+  }
+
+  return decodeURIComponent(match[1]);
 }
 
 async function createOrganization(name: string, ownerId: string) {
@@ -110,6 +138,11 @@ afterAll(async () => {
   await disconnectTestDatabase();
 });
 
+beforeEach(() => {
+  mockSendEmail.mockReset();
+  mockSendEmail.mockResolvedValue(undefined);
+});
+
 describe("Invitation routes", () => {
   test("rejects invitation creation without authentication", async () => {
     const response = await request(app)
@@ -172,7 +205,10 @@ describe("Invitation routes", () => {
       expect(response.body.data.invitation.invitedEmail).toBe(
         "new.member@example.com",
       );
-      expect(response.body.data.token).toMatch(/^[a-f0-9]{64}$/);
+      const token = getTokenFromSentInvitationEmail();
+
+      expect(token).toMatch(/^[a-f0-9]{64}$/);
+      expect(response.body.data).not.toHaveProperty("token");
       expect(response.body.data.invitation).not.toHaveProperty("tokenHash");
 
       const savedInvitation = await prisma.invitation.findUniqueOrThrow({
@@ -360,7 +396,7 @@ describe("Invitation routes", () => {
 
       expect(createResponse.status).toBe(201);
 
-      const token = createResponse.body.data.token as string;
+      const token = getTokenFromSentInvitationEmail();
 
       const acceptResponse = await request(app)
         .post("/invitations/accept")

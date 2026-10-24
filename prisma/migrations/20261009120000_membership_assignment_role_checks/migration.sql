@@ -42,7 +42,7 @@ BEGIN
 END;
 $$;
 
-CREATE TRIGGER memberships_validate_assignment_roles
+CREATE OR REPLACE TRIGGER memberships_validate_assignment_roles
 BEFORE INSERT OR UPDATE OF
     role_id,
     organization_id,
@@ -92,7 +92,7 @@ BEGIN
 END;
 $$;
 
-CREATE TRIGGER memberships_validate_referenced_role
+CREATE OR REPLACE TRIGGER memberships_validate_referenced_role
 BEFORE UPDATE OF role_id
 ON memberships
 FOR EACH ROW
