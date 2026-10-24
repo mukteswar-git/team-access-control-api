@@ -33,6 +33,7 @@ jest.unstable_mockModule("../../../src/middleware/rate-limit.js", () => {
 
   return {
     loginRateLimiter: passThrough,
+    registerRateLimiter: passThrough,
     resendVerificationRateLimiter: passThrough,
     passwordResetRequestRateLimiter: passThrough,
     resetPasswordRateLimiter: passThrough,

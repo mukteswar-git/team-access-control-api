@@ -3,6 +3,7 @@ import validate from "../../middleware/validate.js";
 import {
   loginRateLimiter,
   passwordResetRequestRateLimiter,
+  registerRateLimiter,
   resendVerificationRateLimiter,
   resetPasswordRateLimiter,
 } from "../../middleware/rate-limit.js";
@@ -33,7 +34,12 @@ import validateParams from "../../middleware/validate-params.js";
 
 const router = Router();
 
-router.post("/register", validate(registerSchema), register);
+router.post(
+  "/register",
+  registerRateLimiter,
+  validate(registerSchema),
+  register,
+);
 router.post("/login", loginRateLimiter, validate(loginSchema), login);
 router.get("/me", requireAuth, getCurrentUser);
 router.post("/verify-email", validate(verifyEmailSchema), verifyEmail);
